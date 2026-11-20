@@ -1,12 +1,21 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { CachedAudioMetadata, CacheInventoryResponse, CacheSummaryItem } from '../src/types';
 
-const CACHE_DIR = path.resolve(process.cwd(), 'data', 'audio-cache');
+const BUNDLED_CACHE_DIR = path.resolve(process.cwd(), 'data', 'audio-cache');
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const WRITABLE_CACHE_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'voz-e-folha', 'audio-cache')
+  : BUNDLED_CACHE_DIR;
 
-function ensureCacheDir(): void {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
+function ensureWritableDir(dir: string = WRITABLE_CACHE_DIR): void {
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch {
+    // Ignore on read-only environments
   }
 }
 
@@ -18,20 +27,38 @@ function sanitizeKey(cacheKey: string): string {
 }
 
 export function getWavFilePath(cacheKey: string): string {
-  ensureCacheDir();
-  return path.join(CACHE_DIR, `${sanitizeKey(cacheKey)}.wav`);
+  const safe = sanitizeKey(cacheKey);
+  ensureWritableDir();
+  const writableWav = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
+  if (fs.existsSync(writableWav)) {
+    return writableWav;
+  }
+  const bundledWav = path.join(BUNDLED_CACHE_DIR, `${safe}.wav`);
+  if (fs.existsSync(bundledWav)) {
+    return bundledWav;
+  }
+  return writableWav;
 }
 
-function getMetaFilePath(cacheKey: string): string {
-  ensureCacheDir();
-  return path.join(CACHE_DIR, `${sanitizeKey(cacheKey)}.json`);
+function resolveMetaFilePath(cacheKey: string): string {
+  const safe = sanitizeKey(cacheKey);
+  ensureWritableDir();
+  const writableMeta = path.join(WRITABLE_CACHE_DIR, `${safe}.json`);
+  if (fs.existsSync(writableMeta)) {
+    return writableMeta;
+  }
+  const bundledMeta = path.join(BUNDLED_CACHE_DIR, `${safe}.json`);
+  if (fs.existsSync(bundledMeta)) {
+    return bundledMeta;
+  }
+  return writableMeta;
 }
 
 export function readCachedAudio(cacheKey: string): CachedAudioMetadata | null {
   try {
     const safe = sanitizeKey(cacheKey);
     const wavPath = getWavFilePath(safe);
-    const metaPath = getMetaFilePath(safe);
+    const metaPath = resolveMetaFilePath(safe);
     if (!fs.existsSync(wavPath) || !fs.existsSync(metaPath)) {
       return null;
     }
@@ -57,8 +84,9 @@ export function writeCachedAudio(
   metadata: Omit<CachedAudioMetadata, 'cacheKey' | 'fileSizeBytes' | 'audioUrl' | 'createdAt'>,
 ): CachedAudioMetadata {
   const safe = sanitizeKey(cacheKey);
-  const wavPath = getWavFilePath(safe);
-  const metaPath = getMetaFilePath(safe);
+  ensureWritableDir();
+  const wavPath = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
+  const metaPath = path.join(WRITABLE_CACHE_DIR, `${safe}.json`);
   const tmpWavPath = `${wavPath}.tmp`;
   const tmpMetaPath = `${metaPath}.tmp`;
 
@@ -80,18 +108,29 @@ export function writeCachedAudio(
 }
 
 export function listCachedAudios(): CacheInventoryResponse {
-  ensureCacheDir();
-  const files = fs.readdirSync(CACHE_DIR);
+  ensureWritableDir();
+  const candidateDirs =
+    WRITABLE_CACHE_DIR === BUNDLED_CACHE_DIR
+      ? [BUNDLED_CACHE_DIR]
+      : [WRITABLE_CACHE_DIR, BUNDLED_CACHE_DIR];
+
+  const seenKeys = new Set<string>();
   const items: CacheSummaryItem[] = [];
   let totalSizeBytes = 0;
 
-  for (const file of files) {
-    if (!file.endsWith('.json')) continue;
-    const key = file.slice(0, -5);
-    const meta = readCachedAudio(key);
-    if (meta) {
-      items.push({ ...meta, exists: true });
-      totalSizeBytes += meta.fileSizeBytes;
+  for (const dir of candidateDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      const key = file.slice(0, -5);
+      if (seenKeys.has(key)) continue;
+      const meta = readCachedAudio(key);
+      if (meta) {
+        seenKeys.add(key);
+        items.push({ ...meta, exists: true });
+        totalSizeBytes += meta.fileSizeBytes;
+      }
     }
   }
 
@@ -106,25 +145,30 @@ export function listCachedAudios(): CacheInventoryResponse {
 
 export function deleteCachedAudio(cacheKey: string): boolean {
   const safe = sanitizeKey(cacheKey);
-  const wavPath = getWavFilePath(safe);
-  const metaPath = getMetaFilePath(safe);
+  ensureWritableDir();
+  const wavPath = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
+  const metaPath = path.join(WRITABLE_CACHE_DIR, `${safe}.json`);
   let removed = false;
 
-  if (fs.existsSync(wavPath)) {
-    fs.unlinkSync(wavPath);
-    removed = true;
-  }
-  if (fs.existsSync(metaPath)) {
-    fs.unlinkSync(metaPath);
-    removed = true;
+  try {
+    if (fs.existsSync(wavPath)) {
+      fs.unlinkSync(wavPath);
+      removed = true;
+    }
+    if (fs.existsSync(metaPath)) {
+      fs.unlinkSync(metaPath);
+      removed = true;
+    }
+  } catch {
+    // Bundled read-only files in Vercel cannot be unlinked from disk
   }
   clearPartialBatchCache(safe);
   return removed;
 }
 
 function getPartialsDir(cacheKey: string): string {
-  ensureCacheDir();
-  return path.join(CACHE_DIR, 'partials', sanitizeKey(cacheKey));
+  ensureWritableDir();
+  return path.join(WRITABLE_CACHE_DIR, 'partials', sanitizeKey(cacheKey));
 }
 
 function getPartialBatchPath(cacheKey: string, batchIndex: number, fingerprint: string): string {
@@ -156,9 +200,7 @@ export function writePartialBatchWav(
 ): void {
   try {
     const dir = getPartialsDir(cacheKey);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    ensureWritableDir(dir);
     const filePath = getPartialBatchPath(cacheKey, batchIndex, fingerprint);
     const tmpPath = `${filePath}.tmp`;
     fs.writeFileSync(tmpPath, wavBytes);

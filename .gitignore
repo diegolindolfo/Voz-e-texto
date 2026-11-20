@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.vercel/
+data/audio-cache/partials/
+data/audio-cache/*.tmp

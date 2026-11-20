@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { PUBLIC_DOMAIN_BOOKS } from '../src/data/books';
 import type {
@@ -10,8 +11,16 @@ import type {
   ScriptTurn,
 } from '../src/types';
 
-const BOOKS_DATA_DIR = path.resolve(process.cwd(), 'data', 'books');
-const SCRIPT_CACHE_DIR = path.resolve(process.cwd(), 'data', 'script-cache');
+const BUNDLED_BOOKS_DIR = path.resolve(process.cwd(), 'data', 'books');
+const BUNDLED_SCRIPT_CACHE_DIR = path.resolve(process.cwd(), 'data', 'script-cache');
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const WRITABLE_BOOKS_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'voz-e-folha', 'books')
+  : BUNDLED_BOOKS_DIR;
+const WRITABLE_SCRIPT_CACHE_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'voz-e-folha', 'script-cache')
+  : BUNDLED_SCRIPT_CACHE_DIR;
+
 const BUILT_IN_BOOK_IDS = new Set([
   'fabulas-esopo',
   'contos-grimm-perrault',
@@ -31,8 +40,12 @@ interface CachedScriptRecord {
 let cachedFullBooks: Book[] | null = null;
 
 function ensureDir(dir: string): void {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch {
+    // Ignore on read-only environments
   }
 }
 
@@ -49,10 +62,16 @@ export function invalidateBookLibraryCache(): void {
 
 export function readCachedDramatizedScript(chapterId: string): CachedScriptRecord | null {
   try {
-    ensureDir(SCRIPT_CACHE_DIR);
-    const filePath = path.join(SCRIPT_CACHE_DIR, `${sanitizeId(chapterId)}.json`);
-    if (!fs.existsSync(filePath)) return null;
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as CachedScriptRecord;
+    const safe = sanitizeId(chapterId);
+    const writablePath = path.join(WRITABLE_SCRIPT_CACHE_DIR, `${safe}.json`);
+    if (fs.existsSync(writablePath)) {
+      return JSON.parse(fs.readFileSync(writablePath, 'utf-8')) as CachedScriptRecord;
+    }
+    const bundledPath = path.join(BUNDLED_SCRIPT_CACHE_DIR, `${safe}.json`);
+    if (fs.existsSync(bundledPath)) {
+      return JSON.parse(fs.readFileSync(bundledPath, 'utf-8')) as CachedScriptRecord;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -68,9 +87,9 @@ export function writeCachedDramatizedScript(
     turns: ScriptTurn[];
   },
 ): CachedScriptRecord {
-  ensureDir(SCRIPT_CACHE_DIR);
+  ensureDir(WRITABLE_SCRIPT_CACHE_DIR);
   const safeId = sanitizeId(chapterId);
-  const filePath = path.join(SCRIPT_CACHE_DIR, `${safeId}.json`);
+  const filePath = path.join(WRITABLE_SCRIPT_CACHE_DIR, `${safeId}.json`);
   const tmpPath = `${filePath}.tmp`;
   const record: CachedScriptRecord = {
     chapterId: safeId,
@@ -122,45 +141,54 @@ function loadFullBooks(): Book[] {
     return cachedFullBooks;
   }
 
-  ensureDir(BOOKS_DATA_DIR);
+  ensureDir(WRITABLE_BOOKS_DIR);
+  const candidateDirs =
+    WRITABLE_BOOKS_DIR === BUNDLED_BOOKS_DIR
+      ? [BUNDLED_BOOKS_DIR]
+      : [WRITABLE_BOOKS_DIR, BUNDLED_BOOKS_DIR];
 
   // 1. Hydrate built-in fable & fairy tale collections
   const books: Book[] = PUBLIC_DOMAIN_BOOKS.map((seedBook) => {
-    const fullFile = readBookJsonFile(path.join(BOOKS_DATA_DIR, `${seedBook.id}.json`));
-    if (fullFile?.chapters && fullFile.chapters.length > 0) {
-      return {
-        ...seedBook,
-        publicDomainSource: fullFile.publicDomainSource || seedBook.publicDomainSource,
-        gutenbergId: fullFile.gutenbergId ?? seedBook.gutenbergId,
-        chapters: fullFile.chapters,
-      };
+    for (const dir of candidateDirs) {
+      const fullFile = readBookJsonFile(path.join(dir, `${seedBook.id}.json`));
+      if (fullFile?.chapters && fullFile.chapters.length > 0) {
+        return {
+          ...seedBook,
+          publicDomainSource: fullFile.publicDomainSource || seedBook.publicDomainSource,
+          gutenbergId: fullFile.gutenbergId ?? seedBook.gutenbergId,
+          chapters: fullFile.chapters,
+        };
+      }
     }
     return seedBook;
   });
 
-  // 2. Load any additional books saved in data/books/*.json
+  // 2. Load any additional books saved in books dirs
   const knownIds = new Set(books.map((b) => b.id));
-  const files = fs.readdirSync(BOOKS_DATA_DIR).filter((f) => f.endsWith('.json'));
   const extraBooks: Book[] = [];
 
-  for (const file of files) {
-    const slug = file.replace(/\.json$/, '');
-    if (knownIds.has(slug)) continue;
-    const parsed = readBookJsonFile(path.join(BOOKS_DATA_DIR, file));
-    if (!parsed || !parsed.id || !parsed.title || !parsed.chapters) continue;
-    extraBooks.push({
-      id: parsed.id,
-      title: parsed.title,
-      author: parsed.author || 'Tradição Popular',
-      year: typeof parsed.year === 'number' ? parsed.year : new Date().getFullYear(),
-      publicDomainSource: parsed.publicDomainSource || 'Conto adicionado à biblioteca',
-      coverUrl: parsed.coverUrl || '',
-      synopsis: parsed.synopsis || '',
-      gutenbergId: parsed.gutenbergId,
-      isCustom: parsed.isCustom ?? true,
-      chapters: parsed.chapters,
-    });
-    knownIds.add(parsed.id);
+  for (const dir of candidateDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    for (const file of files) {
+      const slug = file.replace(/\.json$/, '');
+      if (knownIds.has(slug)) continue;
+      const parsed = readBookJsonFile(path.join(dir, file));
+      if (!parsed || !parsed.id || !parsed.title || !parsed.chapters) continue;
+      extraBooks.push({
+        id: parsed.id,
+        title: parsed.title,
+        author: parsed.author || 'Tradição Popular',
+        year: typeof parsed.year === 'number' ? parsed.year : new Date().getFullYear(),
+        publicDomainSource: parsed.publicDomainSource || 'Conto adicionado à biblioteca',
+        coverUrl: parsed.coverUrl || '',
+        synopsis: parsed.synopsis || '',
+        gutenbergId: parsed.gutenbergId,
+        isCustom: parsed.isCustom ?? true,
+        chapters: parsed.chapters,
+      });
+      knownIds.add(parsed.id);
+    }
   }
 
   extraBooks.sort((a, b) => a.title.localeCompare(b.title, 'pt-BR'));
@@ -169,10 +197,10 @@ function loadFullBooks(): Book[] {
 }
 
 export function saveBookToLibrary(book: Book): Book {
-  ensureDir(BOOKS_DATA_DIR);
+  ensureDir(WRITABLE_BOOKS_DIR);
   const safeId = sanitizeId(book.id);
   const normalized: Book = { ...book, id: safeId };
-  const filePath = path.join(BOOKS_DATA_DIR, `${safeId}.json`);
+  const filePath = path.join(WRITABLE_BOOKS_DIR, `${safeId}.json`);
   const tmpPath = `${filePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), 'utf-8');
   fs.renameSync(tmpPath, filePath);
@@ -185,7 +213,7 @@ export function deleteCustomBook(bookId: string): boolean {
   if (BUILT_IN_BOOK_IDS.has(safeId)) {
     throw new Error('As coleções principais de fábulas e contos não podem ser removidas.');
   }
-  const filePath = path.join(BOOKS_DATA_DIR, `${safeId}.json`);
+  const filePath = path.join(WRITABLE_BOOKS_DIR, `${safeId}.json`);
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
   invalidateBookLibraryCache();
