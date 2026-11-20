@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { STATIC_PRERENDERED_AUDIOS } from '../src/data/prerenderedAudioCatalog';
 import type { CachedAudioMetadata, CacheInventoryResponse, CacheSummaryItem } from '../src/types';
 
 const BUNDLED_CACHE_DIR = path.resolve(process.cwd(), 'data', 'audio-cache');
+const PUBLIC_CACHE_DIR = path.resolve(process.cwd(), 'public', 'audio-cache');
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const WRITABLE_CACHE_DIR = IS_SERVERLESS
   ? path.join(os.tmpdir(), 'voz-e-folha', 'audio-cache')
@@ -37,6 +39,10 @@ export function getWavFilePath(cacheKey: string): string {
   if (fs.existsSync(bundledWav)) {
     return bundledWav;
   }
+  const publicWav = path.join(PUBLIC_CACHE_DIR, `${safe}.wav`);
+  if (fs.existsSync(publicWav)) {
+    return publicWav;
+  }
   return writableWav;
 }
 
@@ -51,12 +57,21 @@ function resolveMetaFilePath(cacheKey: string): string {
   if (fs.existsSync(bundledMeta)) {
     return bundledMeta;
   }
+  const publicMeta = path.join(PUBLIC_CACHE_DIR, `${safe}.json`);
+  if (fs.existsSync(publicMeta)) {
+    return publicMeta;
+  }
   return writableMeta;
 }
 
 export function readCachedAudio(cacheKey: string): CachedAudioMetadata | null {
   try {
     const safe = sanitizeKey(cacheKey);
+    const staticEntry = STATIC_PRERENDERED_AUDIOS[safe];
+    if (staticEntry) {
+      return staticEntry;
+    }
+
     const wavPath = getWavFilePath(safe);
     const metaPath = resolveMetaFilePath(safe);
     if (!fs.existsSync(wavPath) || !fs.existsSync(metaPath)) {
@@ -74,7 +89,8 @@ export function readCachedAudio(cacheKey: string): CachedAudioMetadata | null {
       audioUrl: `/api/audio/${safe}`,
     };
   } catch {
-    return null;
+    const safe = cacheKey.replace(/[^a-zA-Z0-9_-]/g, '');
+    return STATIC_PRERENDERED_AUDIOS[safe] ?? null;
   }
 }
 
@@ -109,14 +125,19 @@ export function writeCachedAudio(
 
 export function listCachedAudios(): CacheInventoryResponse {
   ensureWritableDir();
-  const candidateDirs =
-    WRITABLE_CACHE_DIR === BUNDLED_CACHE_DIR
-      ? [BUNDLED_CACHE_DIR]
-      : [WRITABLE_CACHE_DIR, BUNDLED_CACHE_DIR];
+  const candidateDirs = Array.from(
+    new Set([WRITABLE_CACHE_DIR, BUNDLED_CACHE_DIR, PUBLIC_CACHE_DIR]),
+  );
 
   const seenKeys = new Set<string>();
   const items: CacheSummaryItem[] = [];
   let totalSizeBytes = 0;
+
+  for (const staticMeta of Object.values(STATIC_PRERENDERED_AUDIOS)) {
+    seenKeys.add(staticMeta.cacheKey);
+    items.push({ ...staticMeta, exists: true });
+    totalSizeBytes += staticMeta.fileSizeBytes;
+  }
 
   for (const dir of candidateDirs) {
     if (!fs.existsSync(dir)) continue;

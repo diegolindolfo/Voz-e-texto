@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Check, Download, FileUp, Loader2, Search, X } from 'lucide-react';
 import { PUBLIC_DOMAIN_CATALOG } from '../data/publicDomainCatalog';
+import { safeParseJson } from '../lib/apiClient';
 import { normalizeSearchText, parsePublicDomainBookText } from '../lib/gutenbergParser';
 import type { BookCatalogItem, Chapter, PublicDomainCatalogEntry } from '../types';
 
@@ -98,12 +99,12 @@ export function AddBookSheet({
           synopsis: entry?.synopsis,
         }),
       });
-      const data = (await response.json()) as {
+      const data = await safeParseJson<{
         book?: BookCatalogItem;
         firstChapter?: Chapter | null;
         catalog?: BookCatalogItem[];
         error?: string;
-      };
+      }>(response, 'Não foi possível adicionar a coleção do domínio público.');
       if (!response.ok || !data.book || !data.catalog) {
         throw new Error(data.error || 'Não foi possível adicionar a coleção do domínio público.');
       }
@@ -116,6 +117,42 @@ export function AddBookSheet({
       setCustomGutenbergId('');
       onClose();
     } catch (err) {
+      if (entry?.prebuiltChapters && entry.prebuiltChapters.length > 0) {
+        const localBook: BookCatalogItem = {
+          id: entry.slug,
+          title: entry.title,
+          author: entry.author,
+          year: entry.year,
+          publicDomainSource: 'Domínio Público · Roteiro pré-ajustado por IA',
+          coverUrl: '',
+          synopsis: entry.synopsis,
+          gutenbergId: entry.gutenbergId,
+          isCustom: true,
+          chapters: entry.prebuiltChapters.map((ch) => ({
+            id: ch.id,
+            bookId: ch.bookId,
+            number: ch.number,
+            roman: ch.roman,
+            numberLabel: ch.numberLabel,
+            title: ch.title,
+            estimatedMinutes: ch.estimatedMinutes,
+            wordCount: ch.wordCount,
+            characterCount: ch.characterCount,
+            hasDialogue: ch.hasDialogue,
+            dramatizedByAi: ch.dramatizedByAi,
+            moral: ch.moral,
+            aiNotes: ch.aiNotes,
+            isCustom: ch.isCustom,
+          })),
+        };
+        onBookAdded({
+          book: localBook,
+          firstChapter: entry.prebuiltChapters[0],
+          catalog: [...installedBooks, localBook],
+        });
+        onClose();
+        return;
+      }
       setErrorMessage(
         err instanceof Error ? err.message : 'Erro ao adicionar coleção em domínio público.',
       );
@@ -187,12 +224,12 @@ export function AddBookSheet({
           rawText: cleanText,
         }),
       });
-      const data = (await response.json()) as {
+      const data = await safeParseJson<{
         book?: BookCatalogItem;
         firstChapter?: Chapter | null;
         catalog?: BookCatalogItem[];
         error?: string;
-      };
+      }>(response, 'Não foi possível importar a coleção.');
       if (!response.ok || !data.book || !data.catalog) {
         throw new Error(data.error || 'Não foi possível importar a coleção.');
       }

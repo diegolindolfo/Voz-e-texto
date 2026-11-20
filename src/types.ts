@@ -82,6 +82,7 @@ export interface PublicDomainCatalogEntry {
   synopsis: string;
   narratorName?: string;
   installed?: boolean;
+  prebuiltChapters?: Chapter[];
 }
 
 export type ReadingMode = 'dramatized' | 'narrator';

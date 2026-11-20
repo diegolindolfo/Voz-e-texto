@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { CUSTOM_SAMPLE_EXCERPT } from '../data/books';
-import type { Chapter } from '../types';
+import { safeParseJson } from '../lib/apiClient';
+import type { Chapter, ChapterCharacter, ScriptTurn } from '../types';
 
 interface ImportChapterSheetProps {
   open: boolean;
@@ -54,8 +55,15 @@ export function ImportChapterSheet({
         body: JSON.stringify({ title: cleanTitle, rawText: cleanText }),
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
+      const payload = await safeParseJson<{
+        summary: string;
+        moral?: string;
+        aiNotes?: string;
+        characters: ChapterCharacter[];
+        turns: ScriptTurn[];
+        error?: string;
+      }>(response, 'Não foi possível pré-ajustar o conto com a IA.');
+      if (!response.ok || !Array.isArray(payload.characters) || !Array.isArray(payload.turns)) {
         throw new Error(payload.error || 'Não foi possível pré-ajustar o conto com a IA.');
       }
 

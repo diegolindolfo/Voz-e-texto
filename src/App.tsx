@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, BookOpen, Moon, Sun, Volume2, X } from 'lucide-react';
 import { PUBLIC_DOMAIN_BOOKS } from './data/books';
+import {
+  getStaticCacheInventory,
+  mergeWithStaticCacheInventory,
+  STATIC_PRERENDERED_AUDIOS,
+} from './data/prerenderedAudioCatalog';
+import { safeParseJson } from './lib/apiClient';
 import { evictBrowserAudioCache, getPlayableAudioBlobUrl } from './lib/browserAudioCache';
 import { BrowserSpeechReader, isBrowserSpeechSupported } from './lib/browserSpeech';
 import { computeChapterCacheKey, findActiveSegmentIndex } from './lib/scriptParser';
@@ -149,11 +155,9 @@ export default function App() {
   const [voicesOpen, setVoicesOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const [cacheInventory, setCacheInventory] = useState<CacheInventoryResponse>({
-    items: [],
-    totalSizeBytes: 0,
-    count: 0,
-  });
+  const [cacheInventory, setCacheInventory] = useState<CacheInventoryResponse>(() =>
+    getStaticCacheInventory(),
+  );
 
   // Playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -229,11 +233,18 @@ export default function App() {
 
   const serverCachedMeta = useMemo(() => {
     if (!currentCacheKey) return null;
-    return cacheInventory.items.find((item) => item.cacheKey === currentCacheKey) ?? null;
+    return (
+      STATIC_PRERENDERED_AUDIOS[currentCacheKey] ??
+      cacheInventory.items.find((item) => item.cacheKey === currentCacheKey) ??
+      null
+    );
   }, [cacheInventory.items, currentCacheKey]);
 
   const cachedChapterIds = useMemo(() => {
     const set = new Set<string>();
+    for (const item of Object.values(STATIC_PRERENDERED_AUDIOS)) {
+      set.add(item.chapterId);
+    }
     for (const item of cacheInventory.items) {
       set.add(item.chapterId);
     }
@@ -280,19 +291,19 @@ export default function App() {
       try {
         const res = await fetch('/api/books');
         if (!res.ok) return;
-        const data = (await res.json()) as {
+        const data = await safeParseJson<{
           books?: BookCatalogItem[];
           cache?: CacheInventoryResponse;
-        };
+        }>(res);
         if (cancelled) return;
         if (Array.isArray(data.books) && data.books.length > 0) {
           setServerCatalog(data.books);
         }
         if (data.cache) {
-          setCacheInventory(data.cache);
+          setCacheInventory(mergeWithStaticCacheInventory(data.cache));
         }
       } catch {
-        // Non-fatal: falls back to seed fables
+        // Non-fatal: falls back to seed fables and static pre-rendered WAV catalog
       }
     }
     void loadCatalog();
@@ -320,8 +331,8 @@ export default function App() {
         if (!res.ok) {
           throw new Error('Fábula ou conto não encontrado na biblioteca.');
         }
-        const data = (await res.json()) as { chapter: Chapter };
-        if (cancelled) return;
+        const data = await safeParseJson<{ chapter: Chapter }>(res);
+        if (cancelled || !data.chapter) return;
         setLoadedChapters((prev) => ({ ...prev, [data.chapter.id]: data.chapter }));
       } catch {
         if (cancelled) return;
@@ -345,8 +356,8 @@ export default function App() {
     try {
       const res = await fetch('/api/cache');
       if (res.ok) {
-        const data = (await res.json()) as CacheInventoryResponse;
-        setCacheInventory(data);
+        const data = await safeParseJson<CacheInventoryResponse>(res);
+        setCacheInventory(mergeWithStaticCacheInventory(data));
       }
     } catch {
       // Non-fatal on initial load
@@ -357,7 +368,8 @@ export default function App() {
     try {
       const res = await fetch('/api/tts/status');
       if (!res.ok) return;
-      const data = (await res.json()) as TtsStatusResponse;
+      const data = await safeParseJson<TtsStatusResponse>(res);
+      if (!data || !Array.isArray(data.queue)) return;
       setTtsStatus(data);
 
       const doneCount = data.queue.filter((item) => item.status === 'done').length;
@@ -612,10 +624,12 @@ export default function App() {
           }),
         });
 
-        const data = (await response.json()) as SynthesizeResponse & {
-          error?: string;
-          isQuotaError?: boolean;
-        };
+        const data = await safeParseJson<
+          SynthesizeResponse & {
+            error?: string;
+            isQuotaError?: boolean;
+          }
+        >(response, 'Não foi possível pré-renderizar o áudio desta história.');
         if (!response.ok) {
           const quotaFlag =
             Boolean(data.isQuotaError) ||
@@ -639,19 +653,28 @@ export default function App() {
             : 'Áudio WAV pré-renderizado e salvo em cache para próximas audições.',
         );
       } catch (err) {
-        setErrorMessage(
-          err instanceof Error ? err.message : 'Erro inesperado ao interpretar a história.',
-        );
+        if (!forceRegenerate && browserSpeechSupported) {
+          handleStartLocalSpeech(0);
+          setStatusNotice(
+            'Reproduzindo com voz local do dispositivo (pré-renderização em nuvem indisponível no momento).',
+          );
+        } else {
+          setErrorMessage(
+            err instanceof Error ? err.message : 'Erro inesperado ao interpretar a história.',
+          );
+        }
       } finally {
         setIsSynthesizing(false);
         void refreshTtsStatus();
       }
     },
     [
+      browserSpeechSupported,
       currentBook.title,
       currentCacheKey,
       currentChapter,
       currentVoiceMap,
+      handleStartLocalSpeech,
       isLoadingChapter,
       loadAndPlayMetadata,
       loadedAudioMeta?.cacheKey,
@@ -678,11 +701,11 @@ export default function App() {
           body: JSON.stringify({ bookId: currentBook.id }),
         },
       );
-      const data = (await response.json()) as {
+      const data = await safeParseJson<{
         chapter?: Chapter;
         cached?: boolean;
         error?: string;
-      };
+      }>(response, 'Não foi possível pré-ajustar o elenco de vozes.');
       if (!response.ok || !data.chapter) {
         throw new Error(data.error || 'Não foi possível pré-ajustar o elenco de vozes.');
       }
@@ -855,12 +878,12 @@ export default function App() {
             pacingSec: ttsStatus.pacingSec,
           }),
         });
-        const data = (await res.json()) as {
+        const data = await safeParseJson<{
           added?: number;
           skippedCached?: number;
           status?: TtsStatusResponse;
           error?: string;
-        };
+        }>(res, 'Não foi possível enfileirar as histórias.');
         if (!res.ok) {
           throw new Error(data.error || 'Não foi possível enfileirar as histórias.');
         }
@@ -898,8 +921,8 @@ export default function App() {
         body: JSON.stringify({ pacingSec: seconds }),
       });
       if (res.ok) {
-        const data = (await res.json()) as { status: TtsStatusResponse };
-        setTtsStatus(data.status);
+        const data = await safeParseJson<{ status: TtsStatusResponse }>(res);
+        if (data.status) setTtsStatus(data.status);
       }
     } catch {
       // Non-fatal
@@ -910,8 +933,8 @@ export default function App() {
     try {
       const res = await fetch('/api/tts/queue', { method: 'DELETE' });
       if (res.ok) {
-        const data = (await res.json()) as { status: TtsStatusResponse };
-        setTtsStatus(data.status);
+        const data = await safeParseJson<{ status: TtsStatusResponse }>(res);
+        if (data.status) setTtsStatus(data.status);
         setStatusNotice('Fila de pré-renderização limpa.');
       }
     } catch {
@@ -940,8 +963,8 @@ export default function App() {
           method: 'DELETE',
         });
         if (res.ok) {
-          const data = (await res.json()) as { inventory: CacheInventoryResponse };
-          setCacheInventory(data.inventory);
+          const data = await safeParseJson<{ inventory: CacheInventoryResponse }>(res);
+          setCacheInventory(mergeWithStaticCacheInventory(data.inventory));
           await evictBrowserAudioCache(`/api/audio/${cacheKey}`);
           if (loadedAudioMeta?.cacheKey === cacheKey) {
             resetAudioElement();
@@ -1006,11 +1029,11 @@ export default function App() {
         const res = await fetch(`/api/books/${encodeURIComponent(bookId)}`, {
           method: 'DELETE',
         });
-        const data = (await res.json()) as {
+        const data = await safeParseJson<{
           removed?: boolean;
           catalog?: BookCatalogItem[];
           error?: string;
-        };
+        }>(res, 'Não foi possível remover a coleção.');
         if (!res.ok) {
           throw new Error(data.error || 'Não foi possível remover a coleção.');
         }
