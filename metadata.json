@@ -1,0 +1,8 @@
+{
+  "name": "Remix Voz \u0026 Folha",
+  "description": "Fábulas e contos infantis de domínio público em português, pré-ajustados por IA com múltiplas vozes naturais, moral da história e áudio WAV pré-renderizado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

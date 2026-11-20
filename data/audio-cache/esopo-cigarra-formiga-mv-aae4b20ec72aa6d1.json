@@ -1,0 +1,60 @@
+{
+  "chapterId": "esopo-cigarra-formiga",
+  "bookTitle": "Fábulas e Contos em Domínio Público",
+  "chapterTitle": "A Cigarra e a Formiga",
+  "mode": "dramatized",
+  "voiceMap": {
+    "Contador de Histórias": "Charon",
+    "A Cigarra": "Zephyr",
+    "A Formiga": "Kore"
+  },
+  "durationSec": 87.62,
+  "segments": [
+    {
+      "turnId": "ecf-t1",
+      "speaker": "Contador de Histórias",
+      "voiceName": "Charon",
+      "startSec": 0,
+      "endSec": 23.55
+    },
+    {
+      "turnId": "ecf-t2",
+      "speaker": "A Cigarra",
+      "voiceName": "Zephyr",
+      "startSec": 23.55,
+      "endSec": 35.56
+    },
+    {
+      "turnId": "ecf-t3",
+      "speaker": "A Formiga",
+      "voiceName": "Kore",
+      "startSec": 35.84,
+      "endSec": 47.082
+    },
+    {
+      "turnId": "ecf-t4",
+      "speaker": "Contador de Histórias",
+      "voiceName": "Charon",
+      "startSec": 47.082,
+      "endSec": 59.6
+    },
+    {
+      "turnId": "ecf-t5",
+      "speaker": "A Cigarra",
+      "voiceName": "Zephyr",
+      "startSec": 59.9,
+      "endSec": 68.456
+    },
+    {
+      "turnId": "ecf-t6",
+      "speaker": "A Formiga",
+      "voiceName": "Kore",
+      "startSec": 68.456,
+      "endSec": 87.62
+    }
+  ],
+  "cacheKey": "esopo-cigarra-formiga-mv-aae4b20ec72aa6d1",
+  "fileSizeBytes": 4205804,
+  "createdAt": "2026-11-20T00:57:26.312Z",
+  "audioUrl": "/api/audio/esopo-cigarra-formiga-mv-aae4b20ec72aa6d1"
+}
