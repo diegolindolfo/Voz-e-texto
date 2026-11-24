@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import { AlertCircle, BookOpen, Moon, Sun, Volume2, X } from 'lucide-react';
 import { PUBLIC_DOMAIN_BOOKS } from './data/books';
 import {
@@ -7,8 +8,24 @@ import {
   STATIC_PRERENDERED_AUDIOS,
 } from './data/prerenderedAudioCatalog';
 import { safeParseJson } from './lib/apiClient';
-import { evictBrowserAudioCache, getPlayableAudioBlobUrl } from './lib/browserAudioCache';
+import {
+  downloadWavFile,
+  evictBrowserAudioCache,
+  fetchWavBytesForStorage,
+  getPlayableAudioBlobUrl,
+} from './lib/browserAudioCache';
 import { BrowserSpeechReader, isBrowserSpeechSupported } from './lib/browserSpeech';
+import {
+  auth,
+  formatFriendlyFirestoreError,
+  signInWithGoogle,
+  signOutUser,
+} from './lib/firebase';
+import {
+  deletePrerenderedAudioFromFirestore,
+  savePrerenderedAudioToFirestore,
+  subscribeToPrerenderedAudios,
+} from './lib/prerenderedAudioStore';
 import { computeChapterCacheKey, findActiveSegmentIndex } from './lib/scriptParser';
 import type {
   AudioSegmentTiming,
@@ -155,9 +172,14 @@ export default function App() {
   const [voicesOpen, setVoicesOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const [cacheInventory, setCacheInventory] = useState<CacheInventoryResponse>(() =>
+  const [localCacheInventory, setLocalCacheInventory] = useState<CacheInventoryResponse>(() =>
     getStaticCacheInventory(),
   );
+  const [firestoreItems, setFirestoreItems] = useState<CachedAudioMetadata[]>([]);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [dbSyncLabel, setDbSyncLabel] = useState<string | null>(null);
 
   // Playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -231,11 +253,38 @@ export default function App() {
     });
   }, [currentChapter, mode, currentVoiceMap]);
 
+  const firestoreKeys = useMemo(
+    () => new Set(firestoreItems.map((item) => item.cacheKey)),
+    [firestoreItems],
+  );
+
+  const cacheInventory: CacheInventoryResponse = useMemo(() => {
+    const map = new Map<string, CachedAudioMetadata & { exists: boolean }>();
+    for (const item of localCacheInventory.items) {
+      map.set(item.cacheKey, {
+        ...item,
+        storageSource: item.audioUrl.startsWith('/audio-cache/') ? 'static' : 'local-server',
+        exists: true,
+      });
+    }
+    // Firestore records take precedence as the persistent cloud database source of truth
+    for (const dbItem of firestoreItems) {
+      map.set(dbItem.cacheKey, {
+        ...dbItem,
+        storageSource: 'firestore',
+        exists: true,
+      });
+    }
+    const items = Array.from(map.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const totalSizeBytes = items.reduce((acc, item) => acc + item.fileSizeBytes, 0);
+    return { items, totalSizeBytes, count: items.length };
+  }, [firestoreItems, localCacheInventory.items]);
+
   const serverCachedMeta = useMemo(() => {
     if (!currentCacheKey) return null;
     return (
-      STATIC_PRERENDERED_AUDIOS[currentCacheKey] ??
       cacheInventory.items.find((item) => item.cacheKey === currentCacheKey) ??
+      STATIC_PRERENDERED_AUDIOS[currentCacheKey] ??
       null
     );
   }, [cacheInventory.items, currentCacheKey]);
@@ -284,6 +333,28 @@ export default function App() {
     }
   }, [customChapters]);
 
+  // Track Firebase Google Auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setAuthUser(user);
+      setAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe in real time to public pre-rendered WAV database in Firestore
+  useEffect(() => {
+    const unsubscribe = subscribeToPrerenderedAudios(
+      (items) => {
+        setFirestoreItems(items);
+      },
+      (err) => {
+        console.warn('Firestore prerenderedAudios listener notice:', err.message);
+      },
+    );
+    return () => unsubscribe();
+  }, []);
+
   // Hydrate fables & fairy tales catalog + WAV cache inventory on mount
   useEffect(() => {
     let cancelled = false;
@@ -300,7 +371,7 @@ export default function App() {
           setServerCatalog(data.books);
         }
         if (data.cache) {
-          setCacheInventory(mergeWithStaticCacheInventory(data.cache));
+          setLocalCacheInventory(mergeWithStaticCacheInventory(data.cache));
         }
       } catch {
         // Non-fatal: falls back to seed fables and static pre-rendered WAV catalog
@@ -357,7 +428,7 @@ export default function App() {
       const res = await fetch('/api/cache');
       if (res.ok) {
         const data = await safeParseJson<CacheInventoryResponse>(res);
-        setCacheInventory(mergeWithStaticCacheInventory(data));
+        setLocalCacheInventory(mergeWithStaticCacheInventory(data));
       }
     } catch {
       // Non-fatal on initial load
@@ -645,13 +716,35 @@ export default function App() {
 
         await refreshCacheInventory();
         await refreshTtsStatus();
-        await loadAndPlayMetadata(
-          data,
-          true,
-          data.cached
-            ? 'Reproduzindo fábula pré-renderizada em WAV — zero espera.'
-            : 'Áudio WAV pré-renderizado e salvo em cache para próximas audições.',
-        );
+
+        let savedMeta: CachedAudioMetadata = data;
+        let noticeMessage = data.cached
+          ? 'Reproduzindo fábula pré-renderizada em WAV — zero espera.'
+          : 'Áudio WAV pré-renderizado e salvo em cache para próximas audições.';
+
+        // Automatically persist newly synthesized WAV to Firestore when user is signed in
+        if (authUser && authUser.emailVerified && (!firestoreKeys.has(data.cacheKey) || forceRegenerate)) {
+          try {
+            setDbSyncLabel(`Salvando "${currentChapter.title}" no banco Firestore…`);
+            const wavBytes = await fetchWavBytesForStorage(data.audioUrl);
+            savedMeta = await savePrerenderedAudioToFirestore({
+              meta: data,
+              bookId: currentBook.id,
+              wavBytes,
+              user: authUser,
+              onProgress: (done, total) => {
+                setDbSyncLabel(`Salvando no banco (${done}/${total} blocos)…`);
+              },
+            });
+            noticeMessage = 'Áudio WAV pré-renderizado e salvo no banco Firestore!';
+          } catch (dbErr) {
+            console.warn('Auto-save to Firestore skipped:', dbErr);
+          } finally {
+            setDbSyncLabel(null);
+          }
+        }
+
+        await loadAndPlayMetadata(savedMeta, true, noticeMessage);
       } catch (err) {
         if (!forceRegenerate && browserSpeechSupported) {
           handleStartLocalSpeech(0);
@@ -669,11 +762,14 @@ export default function App() {
       }
     },
     [
+      authUser,
       browserSpeechSupported,
+      currentBook.id,
       currentBook.title,
       currentCacheKey,
       currentChapter,
       currentVoiceMap,
+      firestoreKeys,
       handleStartLocalSpeech,
       isLoadingChapter,
       loadAndPlayMetadata,
@@ -956,26 +1052,151 @@ export default function App() {
     [currentChapter],
   );
 
-  const handleDeleteCacheItem = useCallback(
-    async (cacheKey: string) => {
+  const resolveBookIdForChapter = useCallback(
+    (chapterId: string): string => {
+      for (const b of books) {
+        if (b.chapters.some((c) => c.id === chapterId)) return b.id;
+      }
+      return currentBook.id;
+    },
+    [books, currentBook.id],
+  );
+
+  const handleSignInGoogle = useCallback(async () => {
+    setErrorMessage(null);
+    setIsSigningIn(true);
+    try {
+      const user = await signInWithGoogle();
+      setStatusNotice(`Conectado como ${user.displayName || 'usuário Google'}. Banco Firestore pronto para gravação.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (!msg.includes('popup-closed-by-user')) {
+        setErrorMessage('Não foi possível entrar com o Google. Verifique se pop-ups estão permitidos.');
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  }, []);
+
+  const handleSignOutGoogle = useCallback(async () => {
+    try {
+      await signOutUser();
+      setStatusNotice('Sessão Google encerrada.');
+    } catch {
+      setErrorMessage('Não foi possível encerrar a sessão.');
+    }
+  }, []);
+
+  const handleSaveItemToFirestore = useCallback(
+    async (item: CachedAudioMetadata) => {
+      if (!authUser) {
+        setErrorMessage('Entre com sua conta Google para salvar pré-renderizados no banco Firestore.');
+        return;
+      }
+      setErrorMessage(null);
+      setDbSyncLabel(`Preparando "${item.chapterTitle}"…`);
       try {
-        const res = await fetch(`/api/cache/${encodeURIComponent(cacheKey)}`, {
-          method: 'DELETE',
+        const wavBytes = await fetchWavBytesForStorage(item.audioUrl);
+        await savePrerenderedAudioToFirestore({
+          meta: item,
+          bookId: item.bookId || resolveBookIdForChapter(item.chapterId),
+          wavBytes,
+          user: authUser,
+          onProgress: (done, total) => {
+            setDbSyncLabel(`Enviando "${item.chapterTitle}" (${done}/${total} blocos)…`);
+          },
         });
-        if (res.ok) {
-          const data = await safeParseJson<{ inventory: CacheInventoryResponse }>(res);
-          setCacheInventory(mergeWithStaticCacheInventory(data.inventory));
-          await evictBrowserAudioCache(`/api/audio/${cacheKey}`);
-          if (loadedAudioMeta?.cacheKey === cacheKey) {
-            resetAudioElement();
-          }
-          setStatusNotice('Arquivo WAV removido do cache.');
-        }
-      } catch {
-        setErrorMessage('Não foi possível remover o arquivo do cache.');
+        setStatusNotice(`"${item.chapterTitle}" salvo permanentemente no banco Firestore!`);
+      } catch (err) {
+        setErrorMessage(formatFriendlyFirestoreError(err));
+      } finally {
+        setDbSyncLabel(null);
       }
     },
-    [loadedAudioMeta?.cacheKey, resetAudioElement],
+    [authUser, resolveBookIdForChapter],
+  );
+
+  const handleSyncAllToFirestore = useCallback(async () => {
+    if (!authUser) {
+      setErrorMessage('Entre com sua conta Google para sincronizar os áudios no banco Firestore.');
+      return;
+    }
+    const pending = cacheInventory.items.filter((item) => !firestoreKeys.has(item.cacheKey));
+    if (pending.length === 0) {
+      setStatusNotice('Todos os áudios pré-renderizados já estão salvos no banco Firestore.');
+      return;
+    }
+    setErrorMessage(null);
+    let synced = 0;
+    try {
+      for (const item of pending) {
+        setDbSyncLabel(`Sincronizando ${synced + 1}/${pending.length}: ${item.chapterTitle}…`);
+        const wavBytes = await fetchWavBytesForStorage(item.audioUrl);
+        await savePrerenderedAudioToFirestore({
+          meta: item,
+          bookId: item.bookId || resolveBookIdForChapter(item.chapterId),
+          wavBytes,
+          user: authUser,
+          onProgress: (done, total) => {
+            setDbSyncLabel(
+              `Enviando ${synced + 1}/${pending.length} (${done}/${total} blocos): ${item.chapterTitle}`,
+            );
+          },
+        });
+        synced += 1;
+      }
+      setStatusNotice(
+        `${synced} ${synced === 1 ? 'áudio salvo' : 'áudios salvos'} no banco Firestore com sucesso.`,
+      );
+    } catch (err) {
+      setErrorMessage(formatFriendlyFirestoreError(err));
+    } finally {
+      setDbSyncLabel(null);
+    }
+  }, [authUser, cacheInventory.items, firestoreKeys, resolveBookIdForChapter]);
+
+  const handleDownloadCacheItem = useCallback(async (item: CachedAudioMetadata) => {
+    try {
+      await downloadWavFile(item.audioUrl, `${item.chapterId}-${item.mode}.wav`);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Não foi possível baixar o arquivo WAV.',
+      );
+    }
+  }, []);
+
+  const handleDeleteCacheItem = useCallback(
+    async (cacheKey: string) => {
+      setErrorMessage(null);
+      try {
+        if (firestoreKeys.has(cacheKey)) {
+          setDbSyncLabel('Removendo registro do banco Firestore…');
+          await deletePrerenderedAudioFromFirestore(cacheKey);
+          await evictBrowserAudioCache(`firestore://${cacheKey}`);
+        }
+        try {
+          const res = await fetch(`/api/cache/${encodeURIComponent(cacheKey)}`, {
+            method: 'DELETE',
+          });
+          if (res.ok) {
+            const data = await safeParseJson<{ inventory: CacheInventoryResponse }>(res);
+            setLocalCacheInventory(mergeWithStaticCacheInventory(data.inventory));
+          }
+        } catch {
+          // Non-fatal if static/serverless
+        }
+        await evictBrowserAudioCache(`/api/audio/${cacheKey}`);
+        if (loadedAudioMeta?.cacheKey === cacheKey) {
+          resetAudioElement();
+        }
+        setStatusNotice('Registro WAV removido.');
+      } catch (err) {
+        setErrorMessage(formatFriendlyFirestoreError(err));
+      } finally {
+        setDbSyncLabel(null);
+      }
+    },
+    [firestoreKeys, loadedAudioMeta?.cacheKey, resetAudioElement],
   );
 
   const handleChapterCreated = useCallback((newChapter: Chapter) => {
@@ -1125,7 +1346,7 @@ export default function App() {
               disabled={!currentChapter}
               className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
             >
-              Pré-renderizados ({cacheInventory.count})
+              Banco WAV ({cacheInventory.count})
             </button>
             <button
               type="button"
@@ -1284,6 +1505,7 @@ export default function App() {
             isPlaying={effectiveIsPlaying}
             isLocalSpeechActive={isLocalSpeechActive}
             isCached={Boolean(serverCachedMeta)}
+            cachedStorageSource={serverCachedMeta?.storageSource}
             cachedSizeBytes={serverCachedMeta?.fileSizeBytes}
             cachedDurationSec={serverCachedMeta?.durationSec}
             segments={activeSegments}
@@ -1319,6 +1541,10 @@ export default function App() {
         playbackRate={playbackRate}
         downloadUrl={loadedAudioMeta?.audioUrl ?? serverCachedMeta?.audioUrl ?? null}
         activeSpeakerLabel={activeSpeakerLabel}
+        onDownloadAudio={() => {
+          const target = loadedAudioMeta ?? serverCachedMeta;
+          if (target) void handleDownloadCacheItem(target);
+        }}
         onGenerateOrPlay={() => void handleSynthesizeOrPlay(false)}
         onTogglePlayPause={() => void handleTogglePlayPause()}
         onSeek={handleSeek}
@@ -1354,7 +1580,7 @@ export default function App() {
         onOpenExistingBook={handleOpenExistingBook}
       />
 
-      {/* Bottom sheet / modal: Cast voices & WAV cache manager */}
+      {/* Bottom sheet / modal: Cast voices & Firestore WAV database manager */}
       {currentChapter && (
         <VoicesCacheSheet
           open={voicesOpen}
@@ -1372,6 +1598,16 @@ export default function App() {
             void handleSynthesizeOrPlay(true);
           }}
           cacheInventory={cacheInventory}
+          firestoreKeys={firestoreKeys}
+          authUser={authUser}
+          authReady={authReady}
+          isSigningIn={isSigningIn}
+          dbSyncLabel={dbSyncLabel}
+          onSignInGoogle={() => void handleSignInGoogle()}
+          onSignOutGoogle={() => void handleSignOutGoogle()}
+          onSyncAllToFirestore={() => void handleSyncAllToFirestore()}
+          onSaveItemToFirestore={(item) => void handleSaveItemToFirestore(item)}
+          onDownloadCacheItem={(item) => void handleDownloadCacheItem(item)}
           onDeleteCacheItem={(key) => void handleDeleteCacheItem(key)}
           ttsStatus={ttsStatus}
           remainingUncachedCount={remainingUncachedChapters.length}

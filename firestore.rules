@@ -1,0 +1,345 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // Global Safety Net (Default Deny Catch-All)
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Hardened Global Primitives
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Pure token-based bootstrapped admin check (safe for allow list — zero get/exists calls)
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'diegolindolfo100@gmail.com';
+    }
+
+    // Full admin check for single-document operations (get/create/update/delete)
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function getParentAudio(cacheKey) {
+      return get(/databases/$(database)/documents/prerenderedAudios/$(cacheKey));
+    }
+
+    function parentAudioExists(cacheKey) {
+      return exists(/databases/$(database)/documents/prerenderedAudios/$(cacheKey));
+    }
+
+    // =========================================================================
+    // Validation Blueprint: PrerenderedAudio
+    // =========================================================================
+    function isValidPrerenderedAudio(data, cacheKey) {
+      return data.keys().hasAll([
+          'cacheKey',
+          'chapterId',
+          'bookId',
+          'bookTitle',
+          'chapterTitle',
+          'mode',
+          'voiceMap',
+          'durationSec',
+          'fileSizeBytes',
+          'mimeType',
+          'storageType',
+          'chunkCount',
+          'segments',
+          'status',
+          'isPublic',
+          'createdByUid',
+          'createdByName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'cacheKey',
+          'chapterId',
+          'bookId',
+          'bookTitle',
+          'chapterTitle',
+          'mode',
+          'voiceMap',
+          'durationSec',
+          'fileSizeBytes',
+          'mimeType',
+          'storageType',
+          'chunkCount',
+          'staticAudioUrl',
+          'segments',
+          'status',
+          'isPublic',
+          'createdByUid',
+          'createdByName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.cacheKey is string
+        && data.cacheKey == cacheKey
+        && data.cacheKey.size() >= 4
+        && data.cacheKey.size() <= 128
+        && data.cacheKey.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.chapterId is string
+        && data.chapterId.size() >= 2
+        && data.chapterId.size() <= 120
+        && data.chapterId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.bookId is string
+        && data.bookId.size() >= 2
+        && data.bookId.size() <= 120
+        && data.bookId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.bookTitle is string
+        && data.bookTitle.size() >= 1
+        && data.bookTitle.size() <= 200
+        && data.chapterTitle is string
+        && data.chapterTitle.size() >= 1
+        && data.chapterTitle.size() <= 200
+        && data.mode in ['dramatized', 'narrator']
+        && data.voiceMap is map
+        && data.voiceMap.size() >= 1
+        && data.voiceMap.size() <= 16
+        && (data.durationSec is number)
+        && data.durationSec > 0
+        && data.durationSec <= 7200
+        && (data.fileSizeBytes is int)
+        && data.fileSizeBytes >= 44
+        && data.fileSizeBytes <= 25000000
+        && data.mimeType == 'audio/wav'
+        && data.storageType in ['chunks', 'static']
+        && (data.chunkCount is int)
+        && data.chunkCount >= 0
+        && data.chunkCount <= 60
+        && (
+          !('staticAudioUrl' in data)
+          || (data.staticAudioUrl is string && data.staticAudioUrl.size() >= 1 && data.staticAudioUrl.size() <= 240)
+        )
+        && data.segments is list
+        && data.segments.size() >= 1
+        && data.segments.size() <= 60
+        && data.segments[0] is map
+        && data.segments[0].keys().hasAll(['turnId', 'speaker', 'voiceName', 'startSec', 'endSec'])
+        && data.segments[0].keys().hasOnly(['turnId', 'speaker', 'voiceName', 'startSec', 'endSec'])
+        && data.segments[0].turnId is string
+        && data.segments[0].turnId.size() >= 1
+        && data.segments[0].turnId.size() <= 120
+        && data.segments[0].speaker is string
+        && data.segments[0].speaker.size() >= 1
+        && data.segments[0].speaker.size() <= 120
+        && data.segments[0].voiceName is string
+        && data.segments[0].voiceName.size() >= 1
+        && data.segments[0].voiceName.size() <= 40
+        && (data.segments[0].startSec is number)
+        && (data.segments[0].endSec is number)
+        && data.status in ['uploading', 'ready']
+        && data.isPublic is bool
+        && data.createdByUid is string
+        && data.createdByUid.size() >= 1
+        && data.createdByUid.size() <= 128
+        && data.createdByUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdByName is string
+        && data.createdByName.size() >= 1
+        && data.createdByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Validation Blueprint: AudioChunk
+    // =========================================================================
+    function isValidAudioChunk(data, cacheKey, chunkId) {
+      return data.keys().hasAll([
+          'parentCacheKey',
+          'index',
+          'dataBase64',
+          'byteLength',
+          'isPublic',
+          'createdByUid',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'parentCacheKey',
+          'index',
+          'dataBase64',
+          'byteLength',
+          'isPublic',
+          'createdByUid',
+          'createdAt'
+        ])
+        && chunkId.matches('^chunk-[0-9]{3}$')
+        && data.parentCacheKey is string
+        && data.parentCacheKey == cacheKey
+        && data.parentCacheKey.size() >= 4
+        && data.parentCacheKey.size() <= 128
+        && data.parentCacheKey.matches('^[a-zA-Z0-9_\\-]+$')
+        && (data.index is int)
+        && data.index >= 0
+        && data.index < 60
+        && data.dataBase64 is string
+        && data.dataBase64.size() >= 1
+        && data.dataBase64.size() <= 750000
+        && (data.byteLength is int)
+        && data.byteLength >= 1
+        && data.byteLength <= 550000
+        && data.isPublic is bool
+        && data.createdByUid is string
+        && data.createdByUid.size() >= 1
+        && data.createdByUid.size() <= 128
+        && data.createdByUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection: /prerenderedAudios/{cacheKey}
+    // =========================================================================
+    match /prerenderedAudios/{cacheKey} {
+      // Single document read
+      allow get: if isValidId(cacheKey) && (
+        existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isAdmin()
+      );
+
+      // Secure list query — strictly evaluates resource.data with zero get()/exists() calls
+      allow list: if existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isBootstrappedAdmin();
+
+      // Create: verified user, strict schema, identity match, server timestamps
+      allow create: if isVerifiedUser()
+        && isValidId(cacheKey)
+        && isValidPrerenderedAudio(incoming(), cacheKey)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (incoming().storageType == 'chunks' && incoming().status == 'uploading' && incoming().chunkCount >= 1)
+          || (incoming().storageType == 'static' && incoming().status == 'ready' && incoming().chunkCount == 0 && ('staticAudioUrl' in incoming()))
+        );
+
+      // Action-Based Update: validation blueprint MUST wrap entire update logic
+      allow update: if isVerifiedUser()
+        && isValidId(cacheKey)
+        && isValidPrerenderedAudio(incoming(), cacheKey)
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Admin override
+          isAdmin()
+          || (
+            // Tier 2 Action A: Creator finalizes uploading chunked audio -> ready (atomicity check on chunk-000)
+            existing().createdByUid == request.auth.uid
+            && existing().status == 'uploading'
+            && incoming().status == 'ready'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && exists(/databases/$(database)/documents/prerenderedAudios/$(cacheKey)/chunks/chunk-000)
+          )
+          || (
+            // Tier 2 Action B: Creator toggles visibility on ready record without mutating terminal manifest
+            existing().createdByUid == request.auth.uid
+            && existing().status == 'ready'
+            && incoming().status == 'ready'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['isPublic', 'updatedAt'])
+          )
+        );
+
+      // Delete: owner or admin
+      allow delete: if isVerifiedUser()
+        && isValidId(cacheKey)
+        && (existing().createdByUid == request.auth.uid || isAdmin());
+
+      // =======================================================================
+      // Subcollection: /prerenderedAudios/{cacheKey}/chunks/{chunkId}
+      // =======================================================================
+      match /chunks/{chunkId} {
+        // Master Gate single read
+        allow get: if isValidId(cacheKey)
+          && isValidId(chunkId)
+          && parentAudioExists(cacheKey)
+          && (
+            getParentAudio(cacheKey).data.isPublic == true
+            || (isSignedIn() && getParentAudio(cacheKey).data.createdByUid == request.auth.uid)
+            || isAdmin()
+          );
+
+        // Secure list query — evaluates resource.data directly with zero get()/exists() calls
+        allow list: if existing().isPublic == true
+          || (isSignedIn() && existing().createdByUid == request.auth.uid)
+          || isBootstrappedAdmin();
+
+        // Create: Master Gate verifies parent exists, belongs to creator, and is still uploading
+        allow create: if isVerifiedUser()
+          && isValidId(cacheKey)
+          && isValidId(chunkId)
+          && isValidAudioChunk(incoming(), cacheKey, chunkId)
+          && incoming().createdByUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && parentAudioExists(cacheKey)
+          && getParentAudio(cacheKey).data.createdByUid == request.auth.uid
+          && getParentAudio(cacheKey).data.status == 'uploading'
+          && incoming().index < getParentAudio(cacheKey).data.chunkCount
+          && incoming().isPublic == getParentAudio(cacheKey).data.isPublic;
+
+        // Chunks are immutable once written (only visibility sync allowed)
+        allow update: if isVerifiedUser()
+          && isValidId(cacheKey)
+          && isValidId(chunkId)
+          && isValidAudioChunk(incoming(), cacheKey, chunkId)
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().parentCacheKey == existing().parentCacheKey
+          && incoming().index == existing().index
+          && incoming().dataBase64 == existing().dataBase64
+          && incoming().byteLength == existing().byteLength
+          && incoming().diff(existing()).affectedKeys().hasOnly(['isPublic'])
+          && parentAudioExists(cacheKey)
+          && (getParentAudio(cacheKey).data.createdByUid == request.auth.uid || isAdmin());
+
+        // Delete: owner of parent or admin (for cleanup when removing pre-rendered audio)
+        allow delete: if isVerifiedUser()
+          && isValidId(cacheKey)
+          && isValidId(chunkId)
+          && (
+            existing().createdByUid == request.auth.uid
+            || isAdmin()
+            || (parentAudioExists(cacheKey) && getParentAudio(cacheKey).data.createdByUid == request.auth.uid)
+          );
+      }
+    }
+
+    // =========================================================================
+    // Collection: /admins/{adminId}
+    // =========================================================================
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser()
+        && isValidId(adminId)
+        && (request.auth.uid == adminId || isBootstrappedAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+  }
+}

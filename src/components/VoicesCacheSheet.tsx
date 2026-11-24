@@ -1,18 +1,27 @@
+import { useEffect } from 'react';
 import {
   AlertCircle,
   Check,
   Clock,
+  Cloud,
+  CloudUpload,
+  Database,
   Download,
   Layers,
   Loader2,
+  LogIn,
+  LogOut,
   RefreshCw,
   Trash2,
   Volume2,
   X,
 } from 'lucide-react';
+import type { User } from 'firebase/auth';
 import { AVAILABLE_VOICES } from '../data/books';
+import { canUserDeleteFirestoreRecord } from '../lib/prerenderedAudioStore';
 import { formatBytes, formatDuration } from '../lib/scriptParser';
 import type {
+  CachedAudioMetadata,
   CacheInventoryResponse,
   Chapter,
   PrebuiltVoiceName,
@@ -39,6 +48,16 @@ interface VoicesCacheSheetProps {
   isSynthesizing: boolean;
   onRegenerateCurrent: () => void;
   cacheInventory: CacheInventoryResponse;
+  firestoreKeys: Set<string>;
+  authUser: User | null;
+  authReady: boolean;
+  isSigningIn: boolean;
+  dbSyncLabel: string | null;
+  onSignInGoogle: () => void;
+  onSignOutGoogle: () => void;
+  onSyncAllToFirestore: () => void;
+  onSaveItemToFirestore: (item: CachedAudioMetadata) => void;
+  onDownloadCacheItem: (item: CachedAudioMetadata) => void;
   onDeleteCacheItem: (cacheKey: string) => void;
   ttsStatus: TtsStatusResponse;
   remainingUncachedCount: number;
@@ -63,6 +82,16 @@ export function VoicesCacheSheet({
   isSynthesizing,
   onRegenerateCurrent,
   cacheInventory,
+  firestoreKeys,
+  authUser,
+  authReady,
+  isSigningIn,
+  dbSyncLabel,
+  onSignInGoogle,
+  onSignOutGoogle,
+  onSyncAllToFirestore,
+  onSaveItemToFirestore,
+  onDownloadCacheItem,
   onDeleteCacheItem,
   ttsStatus,
   remainingUncachedCount,
@@ -73,17 +102,31 @@ export function VoicesCacheSheet({
   isLocalSpeechActive,
   onToggleLocalSpeech,
 }: VoicesCacheSheetProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const activeJob = ttsStatus.activeJob;
   const hasQueueItems = ttsStatus.queue.length > 0;
+  const firestoreCount = cacheInventory.items.filter((item) => firestoreKeys.has(item.cacheKey)).length;
+  const unsyncedCount = cacheInventory.items.filter((item) => !firestoreKeys.has(item.cacheKey)).length;
+  const isSyncingDb = Boolean(dbSyncLabel);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
-      aria-label="Elenco de vozes e pré-renderização WAV"
+      aria-label="Elenco de vozes e banco de áudios pré-renderizados"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -94,7 +137,7 @@ export function VoicesCacheSheet({
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="font-editorial text-lg font-semibold text-[#14171F] dark:text-[#EAECEF]">
-                Vozes pré-ajustadas e cache WAV
+                Vozes e banco de pré-renderizados
               </h2>
               <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2]">
                 {chapter.numberLabel} — {chapter.title}
@@ -103,7 +146,7 @@ export function VoicesCacheSheet({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Fechar painel de vozes e cache"
+              aria-label="Fechar painel de vozes e banco de áudios"
               className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-full text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer"
             >
               <X className="w-5 h-5" aria-hidden="true" />
@@ -112,6 +155,102 @@ export function VoicesCacheSheet({
         </div>
 
         <div className="overflow-y-auto px-5 py-5 space-y-7 pb-safe">
+          {/* Firestore Pre-Rendered Audio Database Section */}
+          <section data-testid="firestore-db-section">
+            <div className="flex items-center justify-between gap-2 mb-2.5">
+              <h3 className="text-xs font-semibold text-[#5A6474] dark:text-[#9AA4B2] inline-flex items-center gap-1.5 min-w-0">
+                <Database className="w-3.5 h-3.5 shrink-0 text-[#1E3A5F] dark:text-[#7FA6D6]" aria-hidden="true" />
+                <span className="truncate">Banco Firestore</span>
+              </h3>
+              <span className="font-mono-tabular text-[11px] text-[#5A6474] dark:text-[#9AA4B2] whitespace-nowrap shrink-0">
+                {firestoreCount} no banco · {cacheInventory.count} total
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1D222B] border border-neutral-200/80 dark:border-neutral-800 space-y-3">
+              {!authReady ? (
+                <div className="flex items-center gap-2 text-xs text-[#5A6474] dark:text-[#9AA4B2]">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                  <span>Conectando ao banco de dados…</span>
+                </div>
+              ) : authUser ? (
+                <>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-[#14171F] dark:text-[#EAECEF] truncate">
+                        {authUser.displayName || 'Conta Google conectada'}
+                      </p>
+                      <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5 leading-snug">
+                        Novos áudios WAV gerados são salvos automaticamente no banco em blocos seguros.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onSignOutGoogle}
+                      disabled={isSyncingDb}
+                      aria-label="Sair da conta Google"
+                      className="min-h-[40px] px-3 py-2 rounded-xl border border-neutral-200 dark:border-neutral-700 text-xs font-medium text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF] hover:bg-neutral-100 dark:hover:bg-neutral-800 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Sair</span>
+                    </button>
+                  </div>
+
+                  {dbSyncLabel && (
+                    <div className="p-2.5 rounded-xl bg-[#F7F7F5] dark:bg-[#14171D] border border-neutral-200/80 dark:border-neutral-800 flex items-center gap-2 text-xs text-[#1E3A5F] dark:text-[#7FA6D6]">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" aria-hidden="true" />
+                      <span className="truncate font-medium">{dbSyncLabel}</span>
+                    </div>
+                  )}
+
+                  {unsyncedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={onSyncAllToFirestore}
+                      disabled={isSyncingDb}
+                      className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-xs font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] inline-flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer disabled:opacity-60"
+                    >
+                      <CloudUpload className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>
+                        Salvar {unsyncedCount}{' '}
+                        {unsyncedCount === 1 ? 'áudio local no banco' : 'áudios locais no banco'}
+                      </span>
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[#14171F] dark:text-[#EAECEF]">
+                      Persistência em nuvem
+                    </p>
+                    <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5 leading-snug">
+                      Todos podem ouvir o banco público. Entre com Google para salvar e sincronizar novos WAVs.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onSignInGoogle}
+                    disabled={isSigningIn}
+                    className="w-full sm:w-auto min-h-[44px] px-3.5 py-2 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-xs font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-65"
+                  >
+                    {isSigningIn ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        <span>Entrando…</span>
+                      </>
+                    ) : (
+                      <>
+                        <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Entrar com Google</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Reading mode selector */}
           <section>
             <h3 className="text-xs font-semibold text-[#5A6474] dark:text-[#9AA4B2] mb-2.5">
@@ -253,7 +392,7 @@ export function VoicesCacheSheet({
               </div>
 
               <p className="text-[11px] text-[#5A6474] dark:text-[#9AA4B2] leading-relaxed">
-                Cada parte gerada é salva em disco imediatamente para reprodução instantânea sem espera.
+                Cada parte gerada é preservada localmente e pode ser sincronizada no banco Firestore.
               </p>
 
               {ttsStatus.dailyQuotaPaused && (
@@ -390,20 +529,20 @@ export function VoicesCacheSheet({
               })}
             </div>
             <p className="mt-2.5 text-xs text-[#5A6474] dark:text-[#9AA4B2]">
-              Cada combinação de fábula e elenco gera uma chave única de cache WAV. Alterar uma voz
-              preserva os arquivos já pré-renderizados.
+              Cada combinação de fábula e elenco gera uma chave única de registro no banco WAV.
+              Alterar uma voz preserva os registros já salvos.
             </p>
           </section>
 
-          {/* WAV Cache status & manager */}
-          <section>
+          {/* WAV Inventory & Database Manager */}
+          <section data-testid="wav-inventory-section">
             <div className="flex items-center justify-between gap-2 mb-2.5">
               <h3 className="text-xs font-semibold text-[#5A6474] dark:text-[#9AA4B2]">
                 Histórias pré-renderizadas em WAV
               </h3>
               <span className="font-mono-tabular text-xs text-[#5A6474] dark:text-[#9AA4B2]">
                 {cacheInventory.count}{' '}
-                {cacheInventory.count === 1 ? 'arquivo' : 'arquivos'} ·{' '}
+                {cacheInventory.count === 1 ? 'registro' : 'registros'} ·{' '}
                 {formatBytes(cacheInventory.totalSizeBytes)}
               </span>
             </div>
@@ -415,7 +554,9 @@ export function VoicesCacheSheet({
                     História atual pré-renderizada
                   </p>
                   <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
-                    Reproduzida direto do arquivo WAV sem novas chamadas de IA.
+                    {firestoreKeys.has(currentCacheKey)
+                      ? 'Armazenada no banco Firestore para reprodução em qualquer dispositivo.'
+                      : 'Disponível em cache WAV estático sem novas chamadas de IA.'}
                   </p>
                 </div>
                 <button
@@ -433,12 +574,15 @@ export function VoicesCacheSheet({
             {cacheInventory.items.length === 0 ? (
               <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] py-3">
                 Nenhum arquivo WAV armazenado ainda. Toque em &ldquo;Ouvir história&rdquo; para
-                pré-renderizar e salvar automaticamente em cache.
+                pré-renderizar e salvar automaticamente no banco.
               </p>
             ) : (
               <ul className="divide-y divide-neutral-200/80 dark:divide-neutral-800 border-t border-b border-neutral-200/80 dark:border-neutral-800">
                 {cacheInventory.items.map((item) => {
                   const isCurrent = item.cacheKey === currentCacheKey;
+                  const inFirestore = firestoreKeys.has(item.cacheKey);
+                  const canDelete = !inFirestore || canUserDeleteFirestoreRecord(item, authUser);
+
                   return (
                     <li
                       key={item.cacheKey}
@@ -449,29 +593,63 @@ export function VoicesCacheSheet({
                           {item.chapterTitle}
                           {isCurrent ? ' (atual)' : ''}
                         </p>
-                        <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] font-mono-tabular mt-0.5">
-                          {item.mode === 'dramatized' ? 'Múltiplas vozes' : 'Contador único'} ·{' '}
-                          {formatDuration(item.durationSec)} · {formatBytes(item.fileSizeBytes)}
+                        <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] font-mono-tabular mt-0.5 flex flex-wrap items-center gap-x-1.5">
+                          <span
+                            className={
+                              inFirestore
+                                ? 'text-[#1E3A5F] dark:text-[#7FA6D6] font-medium inline-flex items-center gap-1'
+                                : ''
+                            }
+                          >
+                            {inFirestore ? (
+                              <>
+                                <Cloud className="w-3 h-3 inline" aria-hidden="true" />
+                                Banco Firestore
+                                {item.chunkCount ? ` (${item.chunkCount} blocos)` : ''}
+                              </>
+                            ) : (
+                              'Cache local'
+                            )}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatDuration(item.durationSec)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatBytes(item.fileSizeBytes)}</span>
                         </p>
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">
-                        <a
-                          href={`${item.audioUrl}?download=1`}
-                          download
-                          aria-label={`Baixar WAV de ${item.chapterTitle}`}
-                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-200/60 dark:hover:bg-neutral-800"
-                        >
-                          <Download className="w-4 h-4" aria-hidden="true" />
-                        </a>
+                        {!inFirestore && authUser && (
+                          <button
+                            type="button"
+                            onClick={() => onSaveItemToFirestore(item)}
+                            disabled={isSyncingDb}
+                            aria-label={`Salvar ${item.chapterTitle} no banco Firestore`}
+                            title="Salvar no banco Firestore"
+                            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#1E3A5F] dark:text-[#7FA6D6] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer disabled:opacity-45"
+                          >
+                            <CloudUpload className="w-4 h-4" aria-hidden="true" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => onDeleteCacheItem(item.cacheKey)}
-                          aria-label={`Remover WAV em cache de ${item.chapterTitle}`}
-                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:text-red-600 dark:hover:text-red-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer"
+                          onClick={() => onDownloadCacheItem(item)}
+                          aria-label={`Baixar WAV de ${item.chapterTitle}`}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer"
                         >
-                          <Trash2 className="w-4 h-4" aria-hidden="true" />
+                          <Download className="w-4 h-4" aria-hidden="true" />
                         </button>
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteCacheItem(item.cacheKey)}
+                            disabled={isSyncingDb}
+                            aria-label={`Remover WAV de ${item.chapterTitle}`}
+                            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:text-red-600 dark:hover:text-red-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer disabled:opacity-45"
+                          >
+                            <Trash2 className="w-4 h-4" aria-hidden="true" />
+                          </button>
+                        )}
                       </div>
                     </li>
                   );

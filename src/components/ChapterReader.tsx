@@ -29,6 +29,7 @@ interface ChapterReaderProps {
   isPlaying: boolean;
   isLocalSpeechActive?: boolean;
   isCached: boolean;
+  cachedStorageSource?: 'firestore' | 'static' | 'local-server';
   cachedSizeBytes?: number;
   cachedDurationSec?: number;
   segments: AudioSegmentTiming[];
@@ -58,6 +59,7 @@ export function ChapterReader({
   isPlaying,
   isLocalSpeechActive = false,
   isCached,
+  cachedStorageSource,
   cachedSizeBytes,
   cachedDurationSec,
   segments,
@@ -178,7 +180,7 @@ export function ChapterReader({
             }
           >
             {isCached
-              ? `Pré-renderizado em WAV${cachedSizeBytes ? ` (${formatBytes(cachedSizeBytes)})` : ''}`
+              ? `${cachedStorageSource === 'firestore' ? 'Salvo no banco Firestore' : 'Pré-renderizado em WAV'}${cachedSizeBytes ? ` (${formatBytes(cachedSizeBytes)})` : ''}`
               : 'Pronto para pré-renderizar WAV'}
           </span>
         </div>
@@ -261,7 +263,7 @@ export function ChapterReader({
               disabled={!chapter || isLoadingChapter}
               className="min-h-[40px] px-3 py-2 text-xs font-medium text-[#1E3A5F] dark:text-[#7FA6D6] hover:underline underline-offset-4 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45"
             >
-              Vozes e cache ({characterCount})
+              Elenco e banco ({characterCount})
             </button>
           </div>
         </div>

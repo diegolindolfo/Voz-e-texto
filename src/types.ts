@@ -98,6 +98,7 @@ export interface AudioSegmentTiming {
 export interface CachedAudioMetadata {
   cacheKey: string;
   chapterId: string;
+  bookId?: string;
   bookTitle: string;
   chapterTitle: string;
   mode: ReadingMode;
@@ -107,6 +108,10 @@ export interface CachedAudioMetadata {
   createdAt: string;
   segments: AudioSegmentTiming[];
   audioUrl: string;
+  storageSource?: 'firestore' | 'static' | 'local-server';
+  chunkCount?: number;
+  createdByUid?: string;
+  createdByName?: string;
 }
 
 export interface SynthesizeResponse extends CachedAudioMetadata {

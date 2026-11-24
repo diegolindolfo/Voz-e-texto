@@ -26,6 +26,7 @@ interface AudioDockProps {
   playbackRate: number;
   downloadUrl: string | null;
   activeSpeakerLabel?: string;
+  onDownloadAudio?: () => void;
   onGenerateOrPlay: () => void;
   onTogglePlayPause: () => void;
   onSeek: (seconds: number) => void;
@@ -50,6 +51,7 @@ export function AudioDock({
   playbackRate,
   downloadUrl,
   activeSpeakerLabel,
+  onDownloadAudio,
   onGenerateOrPlay,
   onTogglePlayPause,
   onSeek,
@@ -227,14 +229,14 @@ export function AudioDock({
 
                 <div className="flex items-center gap-1">
                   {downloadUrl && (
-                    <a
-                      href={`${downloadUrl}?download=1`}
-                      download
+                    <button
+                      type="button"
+                      onClick={onDownloadAudio}
                       aria-label="Baixar arquivo WAV pré-renderizado"
-                      className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors"
+                      className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors cursor-pointer"
                     >
                       <Download className="w-[18px] h-[18px]" aria-hidden="true" />
-                    </a>
+                    </button>
                   )}
                   <button
                     type="button"
