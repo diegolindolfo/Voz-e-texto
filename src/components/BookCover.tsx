@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { BookOpen } from 'lucide-react';
 
 interface BookCoverProps {
@@ -9,11 +9,8 @@ interface BookCoverProps {
 }
 
 export function BookCover({ src, title, author, className = '' }: BookCoverProps) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [src]);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = failedSrc === src;
 
   if (failed || !src) {
     return (
@@ -42,7 +39,7 @@ export function BookCover({ src, title, author, className = '' }: BookCoverProps
         src={src}
         alt={`Ilustração editorial de capa para ${title}, de ${author}`}
         referrerPolicy="no-referrer"
-        onError={() => setFailed(true)}
+        onError={() => setFailedSrc(src)}
         className="w-full h-full object-cover"
       />
     </div>

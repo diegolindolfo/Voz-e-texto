@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { CUSTOM_SAMPLE_EXCERPT } from '../data/books';
-import { safeParseJson } from '../lib/apiClient';
+import { authFetch, safeParseJson } from '../lib/apiClient';
 import type { Chapter, ChapterCharacter, ScriptTurn } from '../types';
 
 interface ImportChapterSheetProps {
@@ -49,7 +49,7 @@ export function ImportChapterSheet({
     setErrorMessage(null);
     setIsAnalyzing(true);
     try {
-      const response = await fetch('/api/chapters/analyze', {
+      const response = await authFetch('/api/chapters/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: cleanTitle, rawText: cleanText }),

@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Check, Download, FileUp, Loader2, Search, X } from 'lucide-react';
 import { PUBLIC_DOMAIN_CATALOG } from '../data/publicDomainCatalog';
-import { safeParseJson } from '../lib/apiClient';
+import { safeParseJson, authFetch } from '../lib/apiClient';
 import { normalizeSearchText, parsePublicDomainBookText } from '../lib/gutenbergParser';
-import type { BookCatalogItem, Chapter, PublicDomainCatalogEntry } from '../types';
+import type { Book, BookCatalogItem, Chapter, PublicDomainCatalogEntry } from '../types';
 
 type AddBookTab = 'public-domain' | 'import';
 
@@ -14,6 +14,7 @@ interface AddBookSheetProps {
   onBookAdded: (payload: {
     book: BookCatalogItem;
     firstChapter: Chapter | null;
+    fullBook?: Book;
     catalog: BookCatalogItem[];
   }) => void;
   onOpenExistingBook: (bookId: string) => void;
@@ -28,7 +29,7 @@ export function AddBookSheet({
 }: AddBookSheetProps) {
   const [activeTab, setActiveTab] = useState<AddBookTab>('public-domain');
   const [searchQuery, setSearchQuery] = useState('');
-  const [downloadingId, setDownloadingId] = useState<number | null>(null);
+  const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
   const [customGutenbergId, setCustomGutenbergId] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -79,29 +80,31 @@ export function AddBookSheet({
 
   if (!open) return null;
 
-  const isBusy = downloadingId !== null || isImportingText;
+  const isBusy = downloadingKey !== null || isImportingText;
 
   const handleDownloadGutenberg = async (
-    gutenbergId: number,
-    entry?: PublicDomainCatalogEntry,
+    params: { slug?: string; gutenbergId?: number; entry?: PublicDomainCatalogEntry },
   ) => {
+    const key = params.slug ?? String(params.gutenbergId ?? '');
     setErrorMessage(null);
-    setDownloadingId(gutenbergId);
+    setDownloadingKey(key);
     try {
-      const response = await fetch('/api/books/import-gutenberg', {
+      const response = await authFetch('/api/books/import-gutenberg', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          gutenbergId,
-          title: entry?.title,
-          author: entry?.author,
-          year: entry?.year,
-          synopsis: entry?.synopsis,
+          slug: params.slug,
+          gutenbergId: params.gutenbergId,
+          title: params.entry?.title,
+          author: params.entry?.author,
+          year: params.entry?.year,
+          synopsis: params.entry?.synopsis,
         }),
       });
       const data = await safeParseJson<{
         book?: BookCatalogItem;
         firstChapter?: Chapter | null;
+        fullBook?: Book;
         catalog?: BookCatalogItem[];
         error?: string;
       }>(response, 'Não foi possível adicionar a coleção do domínio público.');
@@ -112,13 +115,15 @@ export function AddBookSheet({
       onBookAdded({
         book: data.book,
         firstChapter: data.firstChapter ?? null,
+        fullBook: data.fullBook,
         catalog: data.catalog,
       });
       setCustomGutenbergId('');
       onClose();
     } catch (err) {
+      const entry = params.entry;
       if (entry?.prebuiltChapters && entry.prebuiltChapters.length > 0) {
-        const localBook: BookCatalogItem = {
+        const localFullBook: Book = {
           id: entry.slug,
           title: entry.title,
           author: entry.author,
@@ -126,7 +131,21 @@ export function AddBookSheet({
           publicDomainSource: 'Domínio Público · Roteiro pré-ajustado por IA',
           coverUrl: '',
           synopsis: entry.synopsis,
-          gutenbergId: entry.gutenbergId,
+          ...(typeof entry.gutenbergId === 'number' ? { gutenbergId: entry.gutenbergId } : {}),
+          isCustom: true,
+          chapters: entry.prebuiltChapters,
+        };
+        const localBook: BookCatalogItem = {
+          id: localFullBook.id,
+          title: localFullBook.title,
+          author: localFullBook.author,
+          year: localFullBook.year,
+          publicDomainSource: localFullBook.publicDomainSource,
+          coverUrl: localFullBook.coverUrl,
+          synopsis: localFullBook.synopsis,
+          ...(typeof localFullBook.gutenbergId === 'number'
+            ? { gutenbergId: localFullBook.gutenbergId }
+            : {}),
           isCustom: true,
           chapters: entry.prebuiltChapters.map((ch) => ({
             id: ch.id,
@@ -148,6 +167,7 @@ export function AddBookSheet({
         onBookAdded({
           book: localBook,
           firstChapter: entry.prebuiltChapters[0],
+          fullBook: localFullBook,
           catalog: [...installedBooks, localBook],
         });
         onClose();
@@ -157,7 +177,7 @@ export function AddBookSheet({
         err instanceof Error ? err.message : 'Erro ao adicionar coleção em domínio público.',
       );
     } finally {
-      setDownloadingId(null);
+      setDownloadingKey(null);
     }
   };
 
@@ -168,7 +188,7 @@ export function AddBookSheet({
       setErrorMessage('Digite apenas o número da obra no Project Gutenberg.');
       return;
     }
-    void handleDownloadGutenberg(id);
+    void handleDownloadGutenberg({ gutenbergId: id });
   };
 
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -214,7 +234,7 @@ export function AddBookSheet({
     setErrorMessage(null);
     setIsImportingText(true);
     try {
-      const response = await fetch('/api/books/import-text', {
+      const response = await authFetch('/api/books/import-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -227,6 +247,7 @@ export function AddBookSheet({
       const data = await safeParseJson<{
         book?: BookCatalogItem;
         firstChapter?: Chapter | null;
+        fullBook?: Book;
         catalog?: BookCatalogItem[];
         error?: string;
       }>(response, 'Não foi possível importar a coleção.');
@@ -237,6 +258,7 @@ export function AddBookSheet({
       onBookAdded({
         book: data.book,
         firstChapter: data.firstChapter ?? null,
+        fullBook: data.fullBook,
         catalog: data.catalog,
       });
       setBookTitle('');
@@ -374,12 +396,14 @@ export function AddBookSheet({
                 {filteredCatalog.map((entry) => {
                   const installedBook =
                     installedBySlug.get(entry.slug) ??
-                    installedByGutenbergId.get(entry.gutenbergId);
-                  const isDownloadingThis = downloadingId === entry.gutenbergId;
+                    (typeof entry.gutenbergId === 'number'
+                      ? installedByGutenbergId.get(entry.gutenbergId)
+                      : undefined);
+                  const isDownloadingThis = downloadingKey === entry.slug;
 
                   return (
                     <li
-                      key={entry.gutenbergId}
+                      key={entry.slug}
                       className="py-3 flex items-start justify-between gap-3"
                     >
                       <div className="min-w-0 flex-1">
@@ -410,7 +434,13 @@ export function AddBookSheet({
                         <button
                           type="button"
                           disabled={isBusy}
-                          onClick={() => void handleDownloadGutenberg(entry.gutenbergId, entry)}
+                          onClick={() =>
+                            void handleDownloadGutenberg({
+                              slug: entry.slug,
+                              gutenbergId: entry.gutenbergId,
+                              entry,
+                            })
+                          }
                           className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-xs font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
                         >
                           {isDownloadingThis ? (

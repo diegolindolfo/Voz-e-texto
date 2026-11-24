@@ -7,17 +7,18 @@ import {
   mergeWithStaticCacheInventory,
   STATIC_PRERENDERED_AUDIOS,
 } from './data/prerenderedAudioCatalog';
-import { safeParseJson } from './lib/apiClient';
+import { authFetch, safeParseJson } from './lib/apiClient';
 import {
-  downloadWavFile,
+  downloadAudioFile,
   evictBrowserAudioCache,
-  fetchWavBytesForStorage,
+  fetchAudioBytesForStorage,
   getPlayableAudioBlobUrl,
 } from './lib/browserAudioCache';
 import { BrowserSpeechReader, isBrowserSpeechSupported } from './lib/browserSpeech';
 import {
   auth,
   formatFriendlyFirestoreError,
+  isAdminUser,
   signInWithGoogle,
   signOutUser,
 } from './lib/firebase';
@@ -26,6 +27,15 @@ import {
   savePrerenderedAudioToFirestore,
   subscribeToPrerenderedAudios,
 } from './lib/prerenderedAudioStore';
+import {
+  deleteCustomBookFromFirestore,
+  saveCustomBookToFirestore,
+  saveDramatizedScriptToFirestore,
+  subscribeToCustomBooks,
+  subscribeToDramatizedScripts,
+  type DramatizedScriptRecord,
+} from './lib/libraryStore';
+import { isDailyQuotaError } from './lib/rateLimit';
 import { computeChapterCacheKey, findActiveSegmentIndex } from './lib/scriptParser';
 import type {
   AudioSegmentTiming,
@@ -38,6 +48,7 @@ import type {
   PrebuiltVoiceName,
   ReadingMode,
   SynthesizeResponse,
+  TtsQueueItem,
   TtsStatusResponse,
 } from './types';
 import { AddBookSheet } from './components/AddBookSheet';
@@ -50,6 +61,7 @@ import { VoicesCacheSheet } from './components/VoicesCacheSheet';
 const CUSTOM_CHAPTERS_STORAGE_KEY = 'voz-e-folha-custom-fables-v1';
 const THEME_STORAGE_KEY = 'voz-e-folha-theme-v1';
 const BOOKMARK_STORAGE_KEY = 'voz-e-folha-bookmark-fables-v1';
+const CURATOR_MODE_STORAGE_KEY = 'voz-e-folha-curator-mode-v1';
 const PLAYBACK_RATES = [0.9, 1, 1.15, 1.3];
 
 interface ReadingBookmark {
@@ -154,7 +166,6 @@ export default function App() {
   const initialBookmark = useMemo(() => loadReadingBookmark(), []);
   const [selectedBookId, setSelectedBookId] = useState<string>(initialBookmark.bookId);
   const [selectedChapterId, setSelectedChapterId] = useState<string>(initialBookmark.chapterId);
-  const [isLoadingChapter, setIsLoadingChapter] = useState<boolean>(false);
   const [isDramatizing, setIsDramatizing] = useState<boolean>(false);
 
   const [mode, setMode] = useState<ReadingMode>('dramatized');
@@ -176,16 +187,37 @@ export default function App() {
     getStaticCacheInventory(),
   );
   const [firestoreItems, setFirestoreItems] = useState<CachedAudioMetadata[]>([]);
+  const [cloudCustomBooks, setCloudCustomBooks] = useState<Book[]>([]);
+  const [cloudScripts, setCloudScripts] = useState<Record<string, DramatizedScriptRecord>>({});
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [curatorMode, setCuratorMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(CURATOR_MODE_STORAGE_KEY) === 'true';
+  });
   const [dbSyncLabel, setDbSyncLabel] = useState<string | null>(null);
+
+  const isAdmin = useMemo(() => isAdminUser(authUser), [authUser]);
+  const isCuratorMode = isAdmin && curatorMode;
+
+  const handleToggleCuratorMode = useCallback(() => {
+    if (!isAdmin) return;
+    setCuratorMode((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(CURATOR_MODE_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, [isAdmin]);
 
   // Playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeBlobUrlRef = useRef<string | null>(null);
   const browserSpeechRef = useRef<BrowserSpeechReader | null>(null);
-  const prevCompletedQueueCountRef = useRef<number>(0);
 
   const [loadedAudioMeta, setLoadedAudioMeta] = useState<CachedAudioMetadata | null>(null);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
@@ -203,24 +235,52 @@ export default function App() {
   const [isLocalSpeechPlaying, setIsLocalSpeechPlaying] = useState(false);
   const [localSpeechTurnIndex, setLocalSpeechTurnIndex] = useState(-1);
 
-  // Server TTS queue & live batch progress state
+  // Client-side Curator batch queue state (Vercel serverless compatible)
   const [ttsStatus, setTtsStatus] = useState<TtsStatusResponse>({
     activeJob: null,
     queue: [],
     pacingSec: 4,
     dailyQuotaPaused: false,
   });
+  const queueTasksRef = useRef<Array<{ item: TtsQueueItem; bookId: string; bookTitle: string }>>([]);
+  const queueRunningRef = useRef(false);
+  const queueCancelGenRef = useRef(0);
+  const pacingSecRef = useRef(4);
+  const dailyQuotaPausedRef = useRef(false);
+  const dailyQuotaMessageRef = useRef<string | undefined>(undefined);
 
   const playbackRate = PLAYBACK_RATES[playbackRateIndex];
 
-  // Merge server catalog with any locally imported fables/tales
+  // Merge server catalog, Firestore custom collections, local custom fables, and cloud scripts
   const books: BookCatalogItem[] = useMemo(() => {
-    return serverCatalog.map((book) => {
+    const baseById = new Map<string, BookCatalogItem>();
+    for (const book of serverCatalog) {
+      baseById.set(book.id, book);
+    }
+    for (const cloudBook of cloudCustomBooks) {
+      if (!baseById.has(cloudBook.id)) {
+        baseById.set(cloudBook.id, toBookCatalogItem(cloudBook));
+      }
+    }
+
+    return Array.from(baseById.values()).map((book) => {
       const extras = customChapters.filter((c) => c.bookId === book.id).map(toChapterSummary);
-      if (extras.length === 0) return book;
-      return { ...book, chapters: [...book.chapters, ...extras] };
+      const allChapters = (extras.length === 0 ? book.chapters : [...book.chapters, ...extras]).map(
+        (ch) => {
+          const script = cloudScripts[ch.id];
+          if (!script) return ch;
+          return {
+            ...ch,
+            characterCount: script.characters.length,
+            moral: script.moral || ch.moral,
+            aiNotes: script.aiNotes || ch.aiNotes,
+            dramatizedByAi: true,
+          };
+        },
+      );
+      return { ...book, chapters: allChapters };
     });
-  }, [serverCatalog, customChapters]);
+  }, [cloudCustomBooks, cloudScripts, customChapters, serverCatalog]);
 
   const currentBook = useMemo(
     () => books.find((b) => b.id === selectedBookId) ?? books[0],
@@ -235,7 +295,24 @@ export default function App() {
   const currentChapterSummary =
     currentBook.chapters[currentChapterIndex] ?? currentBook.chapters[0];
 
-  const currentChapter: Chapter | null = loadedChapters[selectedChapterId] ?? null;
+  const currentChapter: Chapter | null = useMemo(() => {
+    const base = loadedChapters[selectedChapterId];
+    if (!base) return null;
+    const script = cloudScripts[base.id];
+    if (!script) return base;
+    return {
+      ...base,
+      summary: script.summary || base.summary,
+      moral: script.moral || base.moral,
+      aiNotes: script.aiNotes || base.aiNotes,
+      characters: script.characters,
+      turns: script.turns,
+      characterCount: script.characters.length,
+      dramatizedByAi: true,
+    };
+  }, [cloudScripts, loadedChapters, selectedChapterId]);
+
+  const isLoadingChapter = !currentChapter;
 
   const currentVoiceMap = useMemo(() => {
     const defaults = buildDefaultVoiceMap(currentChapter);
@@ -267,11 +344,11 @@ export default function App() {
         exists: true,
       });
     }
-    // Firestore records take precedence as the persistent cloud database source of truth
+    // Firestore/Storage records take precedence as the persistent cloud source of truth
     for (const dbItem of firestoreItems) {
       map.set(dbItem.cacheKey, {
         ...dbItem,
-        storageSource: 'firestore',
+        storageSource: dbItem.storageSource ?? 'firebase-storage',
         exists: true,
       });
     }
@@ -342,9 +419,9 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Subscribe in real time to public pre-rendered WAV database in Firestore
+  // Subscribe in real time to public pre-rendered audio, custom collections, and scripts in Firestore
   useEffect(() => {
-    const unsubscribe = subscribeToPrerenderedAudios(
+    const unsubAudio = subscribeToPrerenderedAudios(
       (items) => {
         setFirestoreItems(items);
       },
@@ -352,7 +429,38 @@ export default function App() {
         console.warn('Firestore prerenderedAudios listener notice:', err.message);
       },
     );
-    return () => unsubscribe();
+    const unsubBooks = subscribeToCustomBooks(
+      (cloudBooks) => {
+        setCloudCustomBooks(cloudBooks);
+        setLoadedChapters((prev) => {
+          const next = { ...prev };
+          for (const b of cloudBooks) {
+            for (const ch of b.chapters) {
+              if (!next[ch.id]) {
+                next[ch.id] = ch;
+              }
+            }
+          }
+          return next;
+        });
+      },
+      (err) => {
+        console.warn('Firestore customBooks listener notice:', err.message);
+      },
+    );
+    const unsubScripts = subscribeToDramatizedScripts(
+      (scripts) => {
+        setCloudScripts(scripts);
+      },
+      (err) => {
+        console.warn('Firestore dramatizedScripts listener notice:', err.message);
+      },
+    );
+    return () => {
+      unsubAudio();
+      unsubBooks();
+      unsubScripts();
+    };
   }, []);
 
   // Hydrate fables & fairy tales catalog + WAV cache inventory on mount
@@ -386,13 +494,10 @@ export default function App() {
   // Lazily fetch chapter text whenever user navigates to a chapter not yet in memory
   useEffect(() => {
     if (loadedChapters[selectedChapterId]) {
-      setIsLoadingChapter(false);
       return;
     }
 
     let cancelled = false;
-    setIsLoadingChapter(true);
-    setErrorMessage(null);
 
     async function fetchChapter() {
       try {
@@ -410,10 +515,6 @@ export default function App() {
         const fallbackBook = PUBLIC_DOMAIN_BOOKS[0];
         setSelectedBookId(fallbackBook.id);
         setSelectedChapterId(fallbackBook.chapters[0].id);
-      } finally {
-        if (!cancelled) {
-          setIsLoadingChapter(false);
-        }
       }
     }
 
@@ -434,52 +535,6 @@ export default function App() {
       // Non-fatal on initial load
     }
   }, []);
-
-  const refreshTtsStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/tts/status');
-      if (!res.ok) return;
-      const data = await safeParseJson<TtsStatusResponse>(res);
-      if (!data || !Array.isArray(data.queue)) return;
-      setTtsStatus(data);
-
-      const doneCount = data.queue.filter((item) => item.status === 'done').length;
-      if (doneCount > prevCompletedQueueCountRef.current) {
-        prevCompletedQueueCountRef.current = doneCount;
-        void refreshCacheInventory();
-      } else if (doneCount < prevCompletedQueueCountRef.current) {
-        prevCompletedQueueCountRef.current = doneCount;
-      }
-    } catch {
-      // Non-fatal
-    }
-  }, [refreshCacheInventory]);
-
-  useEffect(() => {
-    void refreshTtsStatus();
-  }, [refreshTtsStatus]);
-
-  useEffect(() => {
-    if (voicesOpen) {
-      void refreshTtsStatus();
-    }
-  }, [voicesOpen, refreshTtsStatus]);
-
-  const hasActiveBackgroundQueue = useMemo(
-    () =>
-      Boolean(ttsStatus.activeJob) ||
-      ttsStatus.queue.some((item) => item.status === 'queued' || item.status === 'running'),
-    [ttsStatus.activeJob, ttsStatus.queue],
-  );
-
-  useEffect(() => {
-    if (!isSynthesizing && !hasActiveBackgroundQueue) return;
-    void refreshTtsStatus();
-    const timer = window.setInterval(() => {
-      void refreshTtsStatus();
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [hasActiveBackgroundQueue, isSynthesizing, refreshTtsStatus]);
 
   const stopLocalSpeech = useCallback(() => {
     browserSpeechRef.current?.stop();
@@ -526,16 +581,6 @@ export default function App() {
     setCurrentTime(0);
     setDuration(0);
   }, []);
-
-  useEffect(() => {
-    if (loadedAudioMeta && loadedAudioMeta.cacheKey !== currentCacheKey) {
-      resetAudioElement();
-    }
-  }, [currentCacheKey, loadedAudioMeta, resetAudioElement]);
-
-  useEffect(() => {
-    stopLocalSpeech();
-  }, [selectedChapterId, stopLocalSpeech]);
 
   useEffect(() => {
     return () => {
@@ -593,7 +638,10 @@ export default function App() {
 
   const loadAndPlayMetadata = useCallback(
     async (meta: CachedAudioMetadata, autoPlay: boolean, notice?: string) => {
-      const { blobUrl, fromBrowserCache } = await getPlayableAudioBlobUrl(meta.audioUrl);
+      const { blobUrl, fromBrowserCache } = await getPlayableAudioBlobUrl(
+        meta.audioUrl,
+        meta.mimeType,
+      );
       if (activeBlobUrlRef.current?.startsWith('blob:')) {
         URL.revokeObjectURL(activeBlobUrlRef.current);
       }
@@ -619,7 +667,7 @@ export default function App() {
       if (notice) {
         setStatusNotice(notice);
       } else if (fromBrowserCache) {
-        setStatusNotice('Áudio carregado instantaneamente do cache WAV pré-renderizado.');
+        setStatusNotice('Áudio carregado instantaneamente do cache local.');
       }
     },
     [playbackRate],
@@ -674,14 +722,35 @@ export default function App() {
         await loadAndPlayMetadata(
           serverCachedMeta,
           true,
-          'Reproduzindo fábula pré-renderizada em WAV — zero espera.',
+          isCuratorMode
+            ? 'Reproduzindo fábula pré-renderizada — zero espera.'
+            : 'Reproduzindo história com áudio pronto.',
         );
+        return;
+      }
+
+      if (!forceRegenerate && (!authUser || !authUser.emailVerified)) {
+        if (browserSpeechSupported) {
+          handleStartLocalSpeech(0);
+          setStatusNotice(
+            'Lendo com a voz do dispositivo. Entre com Google em Vozes para gerar a versão dramatizada.',
+          );
+          return;
+        }
+        setErrorMessage(
+          'Entre com sua conta Google verificada em Vozes para gerar a narração dramatizada desta história.',
+        );
+        return;
+      }
+
+      if (forceRegenerate && !isAdmin) {
+        setErrorMessage('Apenas o administrador curador pode regerar áudios.');
         return;
       }
 
       setIsSynthesizing(true);
       try {
-        const response = await fetch('/api/chapters/synthesize', {
+        const response = await authFetch('/api/chapters/synthesize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -715,30 +784,29 @@ export default function App() {
         }
 
         await refreshCacheInventory();
-        await refreshTtsStatus();
 
         let savedMeta: CachedAudioMetadata = data;
         let noticeMessage = data.cached
-          ? 'Reproduzindo fábula pré-renderizada em WAV — zero espera.'
-          : 'Áudio WAV pré-renderizado e salvo em cache para próximas audições.';
+          ? 'Reproduzindo história com áudio pronto.'
+          : 'Áudio MP3 gerado e salvo em cache para próximas audições.';
 
-        // Automatically persist newly synthesized WAV to Firestore when user is signed in
+        // Automatically upload newly synthesized MP3 to Firebase Storage + Firestore when signed in
         if (authUser && authUser.emailVerified && (!firestoreKeys.has(data.cacheKey) || forceRegenerate)) {
           try {
-            setDbSyncLabel(`Salvando "${currentChapter.title}" no banco Firestore…`);
-            const wavBytes = await fetchWavBytesForStorage(data.audioUrl);
+            setDbSyncLabel(`Salvando "${currentChapter.title}" na nuvem…`);
+            const audioBytes = await fetchAudioBytesForStorage(data.audioUrl);
             savedMeta = await savePrerenderedAudioToFirestore({
               meta: data,
               bookId: currentBook.id,
-              wavBytes,
+              wavBytes: audioBytes,
               user: authUser,
-              onProgress: (done, total) => {
-                setDbSyncLabel(`Salvando no banco (${done}/${total} blocos)…`);
+              onProgress: (done) => {
+                setDbSyncLabel(`Enviando para a nuvem (${done}%)…`);
               },
             });
-            noticeMessage = 'Áudio WAV pré-renderizado e salvo no banco Firestore!';
+            noticeMessage = 'Áudio MP3 gerado e salvo no Firebase Storage!';
           } catch (dbErr) {
-            console.warn('Auto-save to Firestore skipped:', dbErr);
+            console.warn('Auto-save to cloud skipped:', dbErr);
           } finally {
             setDbSyncLabel(null);
           }
@@ -749,7 +817,7 @@ export default function App() {
         if (!forceRegenerate && browserSpeechSupported) {
           handleStartLocalSpeech(0);
           setStatusNotice(
-            'Reproduzindo com voz local do dispositivo (pré-renderização em nuvem indisponível no momento).',
+            'Reproduzindo com voz local do dispositivo (geração em nuvem indisponível no momento).',
           );
         } else {
           setErrorMessage(
@@ -758,7 +826,6 @@ export default function App() {
         }
       } finally {
         setIsSynthesizing(false);
-        void refreshTtsStatus();
       }
     },
     [
@@ -771,12 +838,13 @@ export default function App() {
       currentVoiceMap,
       firestoreKeys,
       handleStartLocalSpeech,
+      isAdmin,
+      isCuratorMode,
       isLoadingChapter,
       loadAndPlayMetadata,
       loadedAudioMeta?.cacheKey,
       mode,
       refreshCacheInventory,
-      refreshTtsStatus,
       serverCachedMeta,
       stopLocalSpeech,
     ],
@@ -789,7 +857,7 @@ export default function App() {
     setIsDramatizing(true);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/chapters/${encodeURIComponent(currentChapter.id)}/dramatize`,
         {
           method: 'POST',
@@ -828,10 +896,17 @@ export default function App() {
               },
         ),
       );
+      if (authUser?.emailVerified) {
+        try {
+          await saveDramatizedScriptToFirestore(refined, authUser);
+        } catch (dbErr) {
+          console.warn('Save dramatized script to Firestore skipped:', dbErr);
+        }
+      }
       setStatusNotice(
         data.cached
           ? 'Roteiro pré-ajustado recuperado do cache.'
-          : `Roteiro pré-ajustado com IA (${refined.characters.length} vozes e moral) e salvo em cache.`,
+          : `Roteiro pré-ajustado com IA (${refined.characters.length} vozes e moral) e salvo na nuvem.`,
       );
     } catch (err) {
       setErrorMessage(
@@ -840,7 +915,7 @@ export default function App() {
     } finally {
       setIsDramatizing(false);
     }
-  }, [currentBook.id, currentChapter, isDramatizing]);
+  }, [authUser, currentBook.id, currentChapter, isDramatizing]);
 
   useEffect(() => {
     if (!statusNotice) return;
@@ -939,67 +1014,266 @@ export default function App() {
     [activeSegments, isLocalSpeechActive, loadAndPlayMetadata, loadedAudioMeta, serverCachedMeta],
   );
 
-  const handleSelectChapter = useCallback((bookId: string, chapterId: string) => {
-    setErrorMessage(null);
-    setIsQuotaError(false);
-    setSelectedBookId(bookId);
-    setSelectedChapterId(chapterId);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  const handleSelectChapter = useCallback(
+    (bookId: string, chapterId: string) => {
+      stopLocalSpeech();
+      resetAudioElement();
+      setErrorMessage(null);
+      setIsQuotaError(false);
+      setSelectedBookId(bookId);
+      setSelectedChapterId(chapterId);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [resetAudioElement, stopLocalSpeech],
+  );
 
   const remainingUncachedChapters = useMemo(() => {
     return currentBook.chapters.filter((ch) => !ch.isCustom && !cachedChapterIds.has(ch.id));
   }, [cachedChapterIds, currentBook.chapters]);
 
+  const authUserRef = useRef(authUser);
+  const loadedChaptersRef = useRef(loadedChapters);
+  const cloudScriptsRef = useRef(cloudScripts);
+  const voiceOverridesRef = useRef(voiceOverrides);
+  const cachedChapterIdsRef = useRef(cachedChapterIds);
+  const firestoreKeysRef = useRef(firestoreKeys);
+
+  useEffect(() => {
+    authUserRef.current = authUser;
+    loadedChaptersRef.current = loadedChapters;
+    cloudScriptsRef.current = cloudScripts;
+    voiceOverridesRef.current = voiceOverrides;
+    cachedChapterIdsRef.current = cachedChapterIds;
+    firestoreKeysRef.current = firestoreKeys;
+  }, [authUser, loadedChapters, cloudScripts, voiceOverrides, cachedChapterIds, firestoreKeys]);
+
+  const syncQueueStatus = useCallback(
+    (activeJob: TtsStatusResponse['activeJob']) => {
+      setTtsStatus({
+        activeJob,
+        queue: queueTasksRef.current.map((t) => ({ ...t.item })),
+        pacingSec: pacingSecRef.current,
+        dailyQuotaPaused: dailyQuotaPausedRef.current,
+        dailyQuotaMessage: dailyQuotaMessageRef.current,
+      });
+    },
+    [],
+  );
+
+  const runClientQueueWorker = useCallback(async () => {
+    if (queueRunningRef.current) return;
+    queueRunningRef.current = true;
+    const myGen = queueCancelGenRef.current;
+
+    try {
+      while (myGen === queueCancelGenRef.current) {
+        if (dailyQuotaPausedRef.current) break;
+        const nextTask = queueTasksRef.current.find((t) => t.item.status === 'queued');
+        if (!nextTask) break;
+
+        if (cachedChapterIdsRef.current.has(nextTask.item.chapterId)) {
+          nextTask.item.status = 'done';
+          syncQueueStatus(null);
+          continue;
+        }
+
+        nextTask.item.status = 'running';
+        let chapterObj: Chapter | undefined = loadedChaptersRef.current[nextTask.item.chapterId];
+        if (!chapterObj) {
+          try {
+            const res = await fetch(
+              `/api/books/${encodeURIComponent(nextTask.bookId)}/chapters/${encodeURIComponent(nextTask.item.chapterId)}`,
+            );
+            if (res.ok) {
+              const data = await safeParseJson<{ chapter?: Chapter }>(res);
+              if (data.chapter) {
+                chapterObj = data.chapter;
+                setLoadedChapters((prev) => ({ ...prev, [data.chapter!.id]: data.chapter! }));
+              }
+            }
+          } catch {
+            // Handled below
+          }
+        }
+
+        if (!chapterObj) {
+          nextTask.item.status = 'failed';
+          nextTask.item.error = 'Não foi possível carregar o texto da história.';
+          syncQueueStatus(null);
+          continue;
+        }
+
+        const scriptOverlay = cloudScriptsRef.current[chapterObj.id];
+        if (scriptOverlay) {
+          chapterObj = {
+            ...chapterObj,
+            characters: scriptOverlay.characters,
+            turns: scriptOverlay.turns,
+          };
+        }
+
+        const voiceMap = {
+          ...buildDefaultVoiceMap(chapterObj),
+          ...(voiceOverridesRef.current[chapterObj.id] ?? {}),
+        };
+        const cacheKey = computeChapterCacheKey({
+          chapterId: chapterObj.id,
+          mode: nextTask.item.mode,
+          turns: chapterObj.turns,
+          voiceMap,
+        });
+
+        syncQueueStatus({
+          chapterId: chapterObj.id,
+          chapterTitle: nextTask.item.chapterTitle,
+          cacheKey,
+          source: 'queue',
+          state: 'synthesizing',
+          completedBatches: 0,
+          totalBatches: Math.max(1, chapterObj.turns.length),
+          reusedBatches: 0,
+        });
+
+        try {
+          const response = await authFetch('/api/chapters/synthesize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chapterId: chapterObj.id,
+              bookTitle: nextTask.bookTitle,
+              chapterTitle: nextTask.item.chapterTitle,
+              mode: nextTask.item.mode,
+              turns: chapterObj.turns,
+              voiceMap,
+            }),
+          });
+          const data = await safeParseJson<
+            SynthesizeResponse & { error?: string; isQuotaError?: boolean }
+          >(response, 'Falha ao pré-renderizar história na fila.');
+
+          if (!response.ok) {
+            const errMsg = data.error || 'Falha ao pré-renderizar história na fila.';
+            const quotaHit =
+              Boolean(data.isQuotaError) ||
+              response.status === 429 ||
+              isDailyQuotaError(errMsg);
+            nextTask.item.status = 'failed';
+            nextTask.item.error = errMsg;
+            if (quotaHit) {
+              dailyQuotaPausedRef.current = true;
+              dailyQuotaMessageRef.current = errMsg;
+            }
+            syncQueueStatus(null);
+            if (quotaHit) break;
+            continue;
+          }
+
+          await refreshCacheInventory();
+          const signedUser = authUserRef.current;
+          if (signedUser?.emailVerified && !firestoreKeysRef.current.has(data.cacheKey)) {
+            try {
+              const bytes = await fetchAudioBytesForStorage(data.audioUrl);
+              await savePrerenderedAudioToFirestore({
+                meta: data,
+                bookId: nextTask.bookId,
+                wavBytes: bytes,
+                user: signedUser,
+              });
+            } catch (dbErr) {
+              console.warn('Batch queue cloud upload skipped:', dbErr);
+            }
+          }
+
+          nextTask.item.status = 'done';
+          syncQueueStatus(null);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Falha na síntese da fila.';
+          nextTask.item.status = 'failed';
+          nextTask.item.error = errMsg;
+          syncQueueStatus(null);
+        }
+
+        const hasMore = queueTasksRef.current.some((t) => t.item.status === 'queued');
+        if (hasMore && !dailyQuotaPausedRef.current && myGen === queueCancelGenRef.current) {
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, pacingSecRef.current * 1000),
+          );
+        }
+      }
+    } finally {
+      queueRunningRef.current = false;
+      syncQueueStatus(null);
+    }
+  }, [refreshCacheInventory, syncQueueStatus]);
+
   const handleEnqueueChaptersForBook = useCallback(
     async (bookId: string, maxCount = 6) => {
-      const targetBook = books.find((b) => b.id === bookId) ?? currentBook;
-      const targetIds = targetBook.chapters
-        .filter((ch) => !ch.isCustom && !cachedChapterIds.has(ch.id))
-        .slice(0, maxCount)
-        .map((c) => c.id);
-
-      if (targetIds.length === 0) {
-        setStatusNotice('Todas as histórias desta coleção já estão pré-renderizadas em WAV.');
+      if (!authUser?.emailVerified) {
+        setErrorMessage('Entre com sua conta Google de curador para pré-renderizar em lote.');
         return;
       }
-      try {
-        const res = await fetch('/api/tts/queue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            bookId: targetBook.id,
-            chapterIds: targetIds,
-            mode,
-            pacingSec: ttsStatus.pacingSec,
-          }),
-        });
-        const data = await safeParseJson<{
-          added?: number;
-          skippedCached?: number;
-          status?: TtsStatusResponse;
-          error?: string;
-        }>(res, 'Não foi possível enfileirar as histórias.');
-        if (!res.ok) {
-          throw new Error(data.error || 'Não foi possível enfileirar as histórias.');
-        }
-        if (data.status) {
-          setTtsStatus(data.status);
-        }
-        if ((data.added ?? 0) > 0) {
-          setStatusNotice(
-            `${data.added} ${data.added === 1 ? 'história adicionada' : 'histórias adicionadas'} à fila de pré-renderização (.wav).`,
-          );
-        } else {
-          setStatusNotice('Estas histórias já estavam pré-renderizadas ou na fila.');
-        }
-      } catch (err) {
-        setErrorMessage(
-          err instanceof Error ? err.message : 'Erro ao enfileirar pré-renderização.',
+      const targetBook = books.find((b) => b.id === bookId) ?? currentBook;
+      const targetChapters = targetBook.chapters
+        .filter((ch) => !ch.isCustom && !cachedChapterIds.has(ch.id))
+        .slice(0, maxCount);
+
+      if (targetChapters.length === 0) {
+        setStatusNotice('Todas as histórias desta coleção já estão com áudio pronto.');
+        return;
+      }
+
+      dailyQuotaPausedRef.current = false;
+      dailyQuotaMessageRef.current = undefined;
+
+      // Trim finished items if list gets long
+      while (queueTasksRef.current.length > 25) {
+        const idx = queueTasksRef.current.findIndex(
+          (t) => t.item.status === 'done' || t.item.status === 'failed',
         );
+        if (idx >= 0) {
+          queueTasksRef.current.splice(idx, 1);
+        } else {
+          break;
+        }
+      }
+
+      let added = 0;
+      for (const ch of targetChapters) {
+        const alreadyInQueue = queueTasksRef.current.some(
+          (t) =>
+            t.item.chapterId === ch.id &&
+            t.item.mode === mode &&
+            (t.item.status === 'queued' || t.item.status === 'running'),
+        );
+        if (alreadyInQueue) continue;
+
+        queueTasksRef.current.push({
+          item: {
+            id: `${ch.id}-${Date.now().toString(36).slice(-4)}`,
+            bookId: targetBook.id,
+            chapterId: ch.id,
+            chapterTitle: `${ch.numberLabel} — ${ch.title}`,
+            mode,
+            status: 'queued',
+          },
+          bookId: targetBook.id,
+          bookTitle: targetBook.title,
+        });
+        added += 1;
+      }
+
+      syncQueueStatus(null);
+
+      if (added > 0) {
+        setStatusNotice(
+          `${added} ${added === 1 ? 'história adicionada' : 'histórias adicionadas'} à fila de pré-renderização (.mp3).`,
+        );
+        void runClientQueueWorker();
+      } else {
+        setStatusNotice('Estas histórias já estavam na fila ou prontas.');
       }
     },
-    [books, cachedChapterIds, currentBook, mode, ttsStatus.pacingSec],
+    [authUser, books, cachedChapterIds, currentBook, mode, runClientQueueWorker, syncQueueStatus],
   );
 
   const handleEnqueueNextChapters = useCallback(
@@ -1009,38 +1283,39 @@ export default function App() {
     [currentBook.id, handleEnqueueChaptersForBook],
   );
 
-  const handleSetPacingSec = useCallback(async (seconds: number) => {
-    try {
-      const res = await fetch('/api/tts/pacing', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pacingSec: seconds }),
-      });
-      if (res.ok) {
-        const data = await safeParseJson<{ status: TtsStatusResponse }>(res);
-        if (data.status) setTtsStatus(data.status);
-      }
-    } catch {
-      // Non-fatal
-    }
-  }, []);
+  const handleSetPacingSec = useCallback(
+    (seconds: number) => {
+      const clamped = Math.max(1, Math.min(30, Math.round(seconds)));
+      pacingSecRef.current = clamped;
+      syncQueueStatus(ttsStatus.activeJob);
+    },
+    [syncQueueStatus, ttsStatus.activeJob],
+  );
 
-  const handleClearQueue = useCallback(async () => {
-    try {
-      const res = await fetch('/api/tts/queue', { method: 'DELETE' });
-      if (res.ok) {
-        const data = await safeParseJson<{ status: TtsStatusResponse }>(res);
-        if (data.status) setTtsStatus(data.status);
-        setStatusNotice('Fila de pré-renderização limpa.');
-      }
-    } catch {
-      // Non-fatal
-    }
-  }, []);
+  const handleClearQueue = useCallback(() => {
+    queueCancelGenRef.current += 1;
+    queueTasksRef.current = queueTasksRef.current.filter((t) => t.item.status === 'running');
+    dailyQuotaPausedRef.current = false;
+    dailyQuotaMessageRef.current = undefined;
+    syncQueueStatus(null);
+    setStatusNotice('Fila de pré-renderização limpa.');
+  }, [syncQueueStatus]);
+
+  const handleModeChange = useCallback(
+    (nextMode: ReadingMode) => {
+      if (nextMode === mode) return;
+      stopLocalSpeech();
+      resetAudioElement();
+      setMode(nextMode);
+    },
+    [mode, resetAudioElement, stopLocalSpeech],
+  );
 
   const handleVoiceChange = useCallback(
     (speaker: string, voice: PrebuiltVoiceName) => {
       if (!currentChapter) return;
+      stopLocalSpeech();
+      resetAudioElement();
       setVoiceOverrides((prev) => ({
         ...prev,
         [currentChapter.id]: {
@@ -1049,7 +1324,7 @@ export default function App() {
         },
       }));
     },
-    [currentChapter],
+    [currentChapter, resetAudioElement, stopLocalSpeech],
   );
 
   const resolveBookIdForChapter = useCallback(
@@ -1090,23 +1365,23 @@ export default function App() {
   const handleSaveItemToFirestore = useCallback(
     async (item: CachedAudioMetadata) => {
       if (!authUser) {
-        setErrorMessage('Entre com sua conta Google para salvar pré-renderizados no banco Firestore.');
+        setErrorMessage('Entre com sua conta Google para salvar pré-renderizados na nuvem.');
         return;
       }
       setErrorMessage(null);
       setDbSyncLabel(`Preparando "${item.chapterTitle}"…`);
       try {
-        const wavBytes = await fetchWavBytesForStorage(item.audioUrl);
+        const audioBytes = await fetchAudioBytesForStorage(item.audioUrl);
         await savePrerenderedAudioToFirestore({
           meta: item,
           bookId: item.bookId || resolveBookIdForChapter(item.chapterId),
-          wavBytes,
+          wavBytes: audioBytes,
           user: authUser,
-          onProgress: (done, total) => {
-            setDbSyncLabel(`Enviando "${item.chapterTitle}" (${done}/${total} blocos)…`);
+          onProgress: (done) => {
+            setDbSyncLabel(`Enviando "${item.chapterTitle}" (${done}%)…`);
           },
         });
-        setStatusNotice(`"${item.chapterTitle}" salvo permanentemente no banco Firestore!`);
+        setStatusNotice(`"${item.chapterTitle}" salvo permanentemente no Firebase Storage!`);
       } catch (err) {
         setErrorMessage(formatFriendlyFirestoreError(err));
       } finally {
@@ -1118,12 +1393,12 @@ export default function App() {
 
   const handleSyncAllToFirestore = useCallback(async () => {
     if (!authUser) {
-      setErrorMessage('Entre com sua conta Google para sincronizar os áudios no banco Firestore.');
+      setErrorMessage('Entre com sua conta Google para sincronizar os áudios na nuvem.');
       return;
     }
     const pending = cacheInventory.items.filter((item) => !firestoreKeys.has(item.cacheKey));
     if (pending.length === 0) {
-      setStatusNotice('Todos os áudios pré-renderizados já estão salvos no banco Firestore.');
+      setStatusNotice('Todos os áudios pré-renderizados já estão salvos na nuvem.');
       return;
     }
     setErrorMessage(null);
@@ -1131,22 +1406,22 @@ export default function App() {
     try {
       for (const item of pending) {
         setDbSyncLabel(`Sincronizando ${synced + 1}/${pending.length}: ${item.chapterTitle}…`);
-        const wavBytes = await fetchWavBytesForStorage(item.audioUrl);
+        const audioBytes = await fetchAudioBytesForStorage(item.audioUrl);
         await savePrerenderedAudioToFirestore({
           meta: item,
           bookId: item.bookId || resolveBookIdForChapter(item.chapterId),
-          wavBytes,
+          wavBytes: audioBytes,
           user: authUser,
-          onProgress: (done, total) => {
+          onProgress: (done) => {
             setDbSyncLabel(
-              `Enviando ${synced + 1}/${pending.length} (${done}/${total} blocos): ${item.chapterTitle}`,
+              `Enviando ${synced + 1}/${pending.length} (${done}%): ${item.chapterTitle}`,
             );
           },
         });
         synced += 1;
       }
       setStatusNotice(
-        `${synced} ${synced === 1 ? 'áudio salvo' : 'áudios salvos'} no banco Firestore com sucesso.`,
+        `${synced} ${synced === 1 ? 'áudio salvo' : 'áudios salvos'} no Firebase Storage com sucesso.`,
       );
     } catch (err) {
       setErrorMessage(formatFriendlyFirestoreError(err));
@@ -1157,25 +1432,27 @@ export default function App() {
 
   const handleDownloadCacheItem = useCallback(async (item: CachedAudioMetadata) => {
     try {
-      await downloadWavFile(item.audioUrl, `${item.chapterId}-${item.mode}.wav`);
+      await downloadAudioFile(item.audioUrl, `${item.chapterId}-${item.mode}`, item.mimeType);
     } catch (err) {
       setErrorMessage(
-        err instanceof Error ? err.message : 'Não foi possível baixar o arquivo WAV.',
+        err instanceof Error ? err.message : 'Não foi possível baixar o arquivo de áudio.',
       );
     }
   }, []);
+
+  const loadedAudioCacheKey = loadedAudioMeta?.cacheKey ?? null;
 
   const handleDeleteCacheItem = useCallback(
     async (cacheKey: string) => {
       setErrorMessage(null);
       try {
         if (firestoreKeys.has(cacheKey)) {
-          setDbSyncLabel('Removendo registro do banco Firestore…');
+          setDbSyncLabel('Removendo registro da nuvem…');
           await deletePrerenderedAudioFromFirestore(cacheKey);
           await evictBrowserAudioCache(`firestore://${cacheKey}`);
         }
         try {
-          const res = await fetch(`/api/cache/${encodeURIComponent(cacheKey)}`, {
+          const res = await authFetch(`/api/cache/${encodeURIComponent(cacheKey)}`, {
             method: 'DELETE',
           });
           if (res.ok) {
@@ -1186,53 +1463,83 @@ export default function App() {
           // Non-fatal if static/serverless
         }
         await evictBrowserAudioCache(`/api/audio/${cacheKey}`);
-        if (loadedAudioMeta?.cacheKey === cacheKey) {
+        if (loadedAudioCacheKey === cacheKey) {
           resetAudioElement();
         }
-        setStatusNotice('Registro WAV removido.');
+        setStatusNotice('Registro de áudio removido.');
       } catch (err) {
         setErrorMessage(formatFriendlyFirestoreError(err));
       } finally {
         setDbSyncLabel(null);
       }
     },
-    [firestoreKeys, loadedAudioMeta?.cacheKey, resetAudioElement],
+    [firestoreKeys, loadedAudioCacheKey, resetAudioElement],
   );
 
-  const handleChapterCreated = useCallback((newChapter: Chapter) => {
-    setCustomChapters((prev) => [...prev, newChapter]);
-    setLoadedChapters((prev) => ({ ...prev, [newChapter.id]: newChapter }));
-    setSelectedBookId(newChapter.bookId);
-    setSelectedChapterId(newChapter.id);
-    setStatusNotice(`"${newChapter.title}" pré-ajustado por IA com ${newChapter.characters.length} vozes.`);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  const handleChapterCreated = useCallback(
+    (newChapter: Chapter) => {
+      stopLocalSpeech();
+      resetAudioElement();
+      setCustomChapters((prev) => [...prev, newChapter]);
+      setLoadedChapters((prev) => ({ ...prev, [newChapter.id]: newChapter }));
+      setSelectedBookId(newChapter.bookId);
+      setSelectedChapterId(newChapter.id);
+      setStatusNotice(`"${newChapter.title}" pré-ajustado por IA com ${newChapter.characters.length} vozes.`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [resetAudioElement, stopLocalSpeech],
+  );
 
   const handleBookAdded = useCallback(
-    ({
+    async ({
       book,
       firstChapter,
+      fullBook,
       catalog,
     }: {
       book: BookCatalogItem;
       firstChapter: Chapter | null;
+      fullBook?: Book;
       catalog: BookCatalogItem[];
     }) => {
       setServerCatalog(catalog);
-      if (firstChapter) {
+      if (fullBook) {
+        setLoadedChapters((prev) => {
+          const next = { ...prev };
+          for (const ch of fullBook.chapters) {
+            next[ch.id] = ch;
+          }
+          return next;
+        });
+      } else if (firstChapter) {
         setLoadedChapters((prev) => ({ ...prev, [firstChapter.id]: firstChapter }));
       }
       const targetChapterId = firstChapter?.id ?? book.chapters[0]?.id;
       if (targetChapterId) {
+        stopLocalSpeech();
+        resetAudioElement();
         setSelectedBookId(book.id);
         setSelectedChapterId(targetChapterId);
       }
-      setStatusNotice(
-        `"${book.title}" adicionado à biblioteca (${book.chapters.length} ${book.chapters.length === 1 ? 'história' : 'histórias'}).`,
-      );
+      if (isAdmin && authUser?.emailVerified && fullBook) {
+        try {
+          await saveCustomBookToFirestore(fullBook, authUser);
+          setStatusNotice(
+            `"${book.title}" adicionado e salvo no Firestore (${book.chapters.length} ${book.chapters.length === 1 ? 'história' : 'histórias'}).`,
+          );
+        } catch (dbErr) {
+          setStatusNotice(
+            `"${book.title}" adicionado localmente (${dbErr instanceof Error ? dbErr.message : 'sem sincronização em nuvem'}).`,
+          );
+        }
+      } else {
+        setStatusNotice(
+          `"${book.title}" adicionado à biblioteca (${book.chapters.length} ${book.chapters.length === 1 ? 'história' : 'histórias'}).`,
+        );
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [],
+    [authUser, isAdmin, resetAudioElement, stopLocalSpeech],
   );
 
   const handleOpenExistingBook = useCallback(
@@ -1247,7 +1554,10 @@ export default function App() {
   const handleDeleteBook = useCallback(
     async (bookId: string) => {
       try {
-        const res = await fetch(`/api/books/${encodeURIComponent(bookId)}`, {
+        if (isAdmin && authUser?.emailVerified && cloudCustomBooks.some((b) => b.id === bookId)) {
+          await deleteCustomBookFromFirestore(bookId);
+        }
+        const res = await authFetch(`/api/books/${encodeURIComponent(bookId)}`, {
           method: 'DELETE',
         });
         const data = await safeParseJson<{
@@ -1255,7 +1565,7 @@ export default function App() {
           catalog?: BookCatalogItem[];
           error?: string;
         }>(res, 'Não foi possível remover a coleção.');
-        if (!res.ok) {
+        if (!res.ok && res.status !== 404) {
           throw new Error(data.error || 'Não foi possível remover a coleção.');
         }
         if (Array.isArray(data.catalog) && data.catalog.length > 0) {
@@ -1275,7 +1585,7 @@ export default function App() {
         );
       }
     },
-    [selectedBookId],
+    [authUser, cloudCustomBooks, isAdmin, selectedBookId],
   );
 
   const hasPrevChapter = currentChapterIndex > 0;
@@ -1338,23 +1648,27 @@ export default function App() {
               disabled={!currentChapter}
               className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
             >
-              Elenco e vozes
+              Vozes
             </button>
-            <button
-              type="button"
-              onClick={() => setVoicesOpen(true)}
-              disabled={!currentChapter}
-              className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-            >
-              Banco WAV ({cacheInventory.count})
-            </button>
-            <button
-              type="button"
-              onClick={() => setAddBookOpen(true)}
-              className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              Adicionar coleção
-            </button>
+            {isCuratorMode && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setVoicesOpen(true)}
+                  disabled={!currentChapter}
+                  className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  Banco de áudio ({cacheInventory.count})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddBookOpen(true)}
+                  className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  Adicionar coleção
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => setDarkMode((prev) => !prev)}
@@ -1362,6 +1676,20 @@ export default function App() {
             >
               {darkMode ? 'Tema claro' : 'Tema noturno'}
             </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={handleToggleCuratorMode}
+                aria-pressed={isCuratorMode}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  isCuratorMode
+                    ? 'bg-[#1E3A5F]/12 dark:bg-[#7FA6D6]/20 text-[#1E3A5F] dark:text-[#7FA6D6]'
+                    : 'text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF]'
+                }`}
+              >
+                {isCuratorMode ? 'Curador ativo' : 'Modo Curador'}
+              </button>
+            )}
           </nav>
 
           {/* Zone 3: Single primary action on desktop / quiet mobile icons */}
@@ -1395,12 +1723,10 @@ export default function App() {
               className="hidden lg:inline-flex min-h-[38px] px-4 py-2 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-xs font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-70"
             >
               {isSynthesizing
-                ? 'Pré-renderizando…'
+                ? 'Preparando…'
                 : isPlaying
                   ? 'Pausar leitura'
-                  : serverCachedMeta
-                    ? 'Ouvir pré-renderizado'
-                    : 'Ouvir história'}
+                  : 'Ouvir história'}
             </button>
           </div>
         </div>
@@ -1477,6 +1803,7 @@ export default function App() {
             selectedBookId={currentBook.id}
             selectedChapterId={selectedChapterId}
             cachedChapterIds={cachedChapterIds}
+            isCuratorMode={isCuratorMode}
             onSelectChapter={handleSelectChapter}
             onOpenAddBook={() => setAddBookOpen(true)}
             onOpenImport={() => setImportOpen(true)}
@@ -1493,13 +1820,14 @@ export default function App() {
             chapterSummary={currentChapterSummary}
             chapterPosition={currentChapterIndex + 1}
             totalChapters={currentBook.chapters.length}
+            isCuratorMode={isCuratorMode}
             isLoadingChapter={isLoadingChapter}
             isDramatizing={isDramatizing}
             onDramatizeChapter={() => void handleDramatizeChapter()}
             onPrerenderCollection={() => void handleEnqueueChaptersForBook(currentBook.id, 6)}
             remainingUncachedCount={remainingUncachedChapters.length}
             mode={mode}
-            onModeChange={setMode}
+            onModeChange={handleModeChange}
             voiceMap={currentVoiceMap}
             activeTurnIndex={activeTurnIndex}
             isPlaying={effectiveIsPlaying}
@@ -1564,6 +1892,7 @@ export default function App() {
         selectedBookId={currentBook.id}
         selectedChapterId={selectedChapterId}
         cachedChapterIds={cachedChapterIds}
+        isCuratorMode={isCuratorMode}
         onSelectChapter={handleSelectChapter}
         onOpenAddBook={() => setAddBookOpen(true)}
         onOpenImport={() => setImportOpen(true)}
@@ -1576,7 +1905,7 @@ export default function App() {
         open={addBookOpen}
         onClose={() => setAddBookOpen(false)}
         installedBooks={books}
-        onBookAdded={handleBookAdded}
+        onBookAdded={(payload) => void handleBookAdded(payload)}
         onOpenExistingBook={handleOpenExistingBook}
       />
 
@@ -1587,7 +1916,7 @@ export default function App() {
           onClose={() => setVoicesOpen(false)}
           chapter={currentChapter}
           mode={mode}
-          onModeChange={setMode}
+          onModeChange={handleModeChange}
           voiceMap={currentVoiceMap}
           onVoiceChange={handleVoiceChange}
           currentCacheKey={currentCacheKey}
@@ -1602,6 +1931,9 @@ export default function App() {
           authUser={authUser}
           authReady={authReady}
           isSigningIn={isSigningIn}
+          isAdmin={isAdmin}
+          isCuratorMode={isCuratorMode}
+          onToggleCuratorMode={handleToggleCuratorMode}
           dbSyncLabel={dbSyncLabel}
           onSignInGoogle={() => void handleSignInGoogle()}
           onSignOutGoogle={() => void handleSignOutGoogle()}
@@ -1612,8 +1944,8 @@ export default function App() {
           ttsStatus={ttsStatus}
           remainingUncachedCount={remainingUncachedChapters.length}
           onEnqueueNextChapters={(count) => void handleEnqueueNextChapters(count)}
-          onSetPacingSec={(sec) => void handleSetPacingSec(sec)}
-          onClearQueue={() => void handleClearQueue()}
+          onSetPacingSec={handleSetPacingSec}
+          onClearQueue={handleClearQueue}
           browserSpeechSupported={browserSpeechSupported}
           isLocalSpeechActive={isLocalSpeechActive}
           onToggleLocalSpeech={handleToggleLocalSpeech}

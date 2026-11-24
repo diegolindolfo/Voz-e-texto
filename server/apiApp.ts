@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express, { type Express } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import { PUBLIC_DOMAIN_CATALOG } from '../src/data/publicDomainCatalog';
 import {
@@ -13,9 +13,9 @@ import { computeChapterCacheKey } from '../src/lib/scriptParser';
 import type { Book, PrebuiltVoiceName, ReadingMode, ScriptTurn } from '../src/types';
 import {
   deleteCachedAudio,
-  getWavFilePath,
   listCachedAudios,
   readCachedAudio,
+  resolveAudioFile,
 } from './audioCache';
 import {
   deleteCustomBook,
@@ -28,6 +28,11 @@ import {
   toBookCatalogItem,
   writeCachedDramatizedScript,
 } from './bookLibrary';
+import {
+  createRateLimitMiddleware,
+  requireAdminAuth,
+  requireVerifiedAuth,
+} from './firebaseAuth';
 import { analyzeLiteraryExcerpt, formatGeminiError } from './gemini';
 import {
   clearBackgroundQueue,
@@ -37,6 +42,33 @@ import {
   runForegroundSynthesis,
   setTtsPacingSec,
 } from './ttsQueue';
+
+function runMiddleware(
+  middleware: (req: Request, res: Response, next: NextFunction) => unknown,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let passed = false;
+    const onFinish = () => {
+      if (!passed) resolve(false);
+    };
+    res.once('finish', onFinish);
+    Promise.resolve(
+      middleware(req, res, () => {
+        passed = true;
+        res.removeListener('finish', onFinish);
+        resolve(true);
+      }),
+    ).catch((err) => {
+      res.removeListener('finish', onFinish);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Erro interno.' });
+      }
+      resolve(false);
+    });
+  });
+}
 
 async function fetchGutenbergText(gutenbergId: number): Promise<string> {
   const urls = [
@@ -76,6 +108,11 @@ export function createApiApp(): Express {
   const app = express();
   app.use(express.json({ limit: '6mb' }));
 
+  const aiRateLimiter = createRateLimitMiddleware({
+    windowMs: 60_000,
+    maxRequests: 15,
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
@@ -99,23 +136,47 @@ export function createApiApp(): Express {
       year: entry.year,
       synopsis: entry.synopsis,
       narratorName: entry.narratorName,
-      installed: installedIds.has(entry.slug) || installedGutenberg.has(entry.gutenbergId),
+      installed:
+        installedIds.has(entry.slug) ||
+        (typeof entry.gutenbergId === 'number' && installedGutenberg.has(entry.gutenbergId)),
     }));
     res.json({ items });
   });
 
-  app.post('/api/books/import-gutenberg', async (req, res) => {
+  app.post('/api/books/import-gutenberg', requireAdminAuth, async (req, res) => {
     try {
-      const gutenbergId = Number.parseInt(String(req.body?.gutenbergId ?? ''), 10);
-      if (!Number.isFinite(gutenbergId) || gutenbergId <= 0 || gutenbergId > 999999) {
-        res.status(400).json({ error: 'Informe um número de catálogo válido.' });
-        return;
+      const slug = typeof req.body?.slug === 'string' ? req.body.slug.trim() : '';
+      const hasGutenbergInput =
+        req.body?.gutenbergId !== undefined &&
+        req.body?.gutenbergId !== null &&
+        String(req.body.gutenbergId).trim() !== '';
+      const gutenbergId = hasGutenbergInput
+        ? Number.parseInt(String(req.body.gutenbergId), 10)
+        : undefined;
+
+      const curated =
+        (slug ? PUBLIC_DOMAIN_CATALOG.find((item) => item.slug === slug) : undefined) ??
+        (typeof gutenbergId === 'number'
+          ? PUBLIC_DOMAIN_CATALOG.find((item) => item.gutenbergId === gutenbergId)
+          : undefined);
+
+      if (!curated) {
+        if (
+          typeof gutenbergId !== 'number' ||
+          !Number.isFinite(gutenbergId) ||
+          gutenbergId <= 0 ||
+          gutenbergId > 999999
+        ) {
+          res.status(400).json({ error: 'Informe um número de catálogo válido.' });
+          return;
+        }
       }
 
-      const curated = PUBLIC_DOMAIN_CATALOG.find((item) => item.gutenbergId === gutenbergId);
       const existingCatalog = getBookCatalog();
       const alreadyInstalled = existingCatalog.find(
-        (b) => b.gutenbergId === gutenbergId || (curated && b.id === curated.slug),
+        (b) =>
+          (curated && b.id === curated.slug) ||
+          (typeof gutenbergId === 'number' && b.gutenbergId === gutenbergId),
       );
       if (alreadyInstalled) {
         const firstCh = getChapterById(alreadyInstalled.id, alreadyInstalled.chapters[0]?.id ?? '');
@@ -137,7 +198,7 @@ export function createApiApp(): Express {
           publicDomainSource: 'Domínio Público · Roteiro pré-ajustado por IA',
           coverUrl: '',
           synopsis: curated.synopsis,
-          gutenbergId: curated.gutenbergId,
+          ...(typeof curated.gutenbergId === 'number' ? { gutenbergId: curated.gutenbergId } : {}),
           isCustom: true,
           chapters: curated.prebuiltChapters,
         };
@@ -145,9 +206,15 @@ export function createApiApp(): Express {
         res.json({
           book: toBookCatalogItem(saved),
           firstChapter: saved.chapters[0],
+          fullBook: saved,
           catalog: getBookCatalog(),
           alreadyInstalled: false,
         });
+        return;
+      }
+
+      if (typeof gutenbergId !== 'number') {
+        res.status(400).json({ error: 'Informe um número de catálogo válido do Project Gutenberg.' });
         return;
       }
 
@@ -211,6 +278,7 @@ export function createApiApp(): Express {
       res.json({
         book: toBookCatalogItem(saved),
         firstChapter: saved.chapters[0],
+        fullBook: saved,
         catalog: getBookCatalog(),
         alreadyInstalled: false,
       });
@@ -224,7 +292,7 @@ export function createApiApp(): Express {
     }
   });
 
-  app.post('/api/books/import-text', (req, res) => {
+  app.post('/api/books/import-text', requireAdminAuth, (req, res) => {
     try {
       const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
       const author =
@@ -284,6 +352,7 @@ export function createApiApp(): Express {
       res.json({
         book: toBookCatalogItem(saved),
         firstChapter: saved.chapters[0],
+        fullBook: saved,
         catalog: getBookCatalog(),
       });
     } catch (err) {
@@ -293,7 +362,7 @@ export function createApiApp(): Express {
     }
   });
 
-  app.delete('/api/books/:bookId', (req, res) => {
+  app.delete('/api/books/:bookId', requireAdminAuth, (req, res) => {
     try {
       const removed = deleteCustomBook(String(req.params.bookId));
       res.json({ removed, catalog: getBookCatalog() });
@@ -345,6 +414,9 @@ export function createApiApp(): Express {
         }
       }
 
+      if (!(await runMiddleware(requireVerifiedAuth, req, res))) return;
+      if (!(await runMiddleware(aiRateLimiter, req, res))) return;
+
       const rawText = found.chapter.turns
         .map((t) => (t.role === 'character' ? `— ${t.text}` : t.text))
         .join('\n\n');
@@ -381,7 +453,7 @@ export function createApiApp(): Express {
     res.json(listCachedAudios());
   });
 
-  app.delete('/api/cache/:cacheKey', (req, res) => {
+  app.delete('/api/cache/:cacheKey', requireAdminAuth, (req, res) => {
     try {
       const removed = deleteCachedAudio(String(req.params.cacheKey));
       res.json({ removed, inventory: listCachedAudios() });
@@ -426,11 +498,11 @@ export function createApiApp(): Express {
     }
   });
 
-  app.get('/api/tts/status', (_req, res) => {
+  app.get('/api/tts/status', requireAdminAuth, (_req, res) => {
     res.json(getTtsStatus());
   });
 
-  app.post('/api/tts/queue', (req, res) => {
+  app.post('/api/tts/queue', requireAdminAuth, (req, res) => {
     try {
       const { bookId, chapterIds, mode, pacingSec } = req.body as {
         bookId?: string;
@@ -456,7 +528,7 @@ export function createApiApp(): Express {
     }
   });
 
-  app.patch('/api/tts/pacing', (req, res) => {
+  app.patch('/api/tts/pacing', requireAdminAuth, (req, res) => {
     const raw = Number(req.body?.pacingSec);
     if (!Number.isFinite(raw) || raw < 1 || raw > 30) {
       res.status(400).json({ error: 'Informe um intervalo entre 1 e 30 segundos.' });
@@ -466,11 +538,11 @@ export function createApiApp(): Express {
     res.json({ pacingSec: updated, status: getTtsStatus() });
   });
 
-  app.delete('/api/tts/queue', (_req, res) => {
+  app.delete('/api/tts/queue', requireAdminAuth, (_req, res) => {
     res.json({ status: clearBackgroundQueue() });
   });
 
-  app.delete('/api/tts/queue/:chapterId', (req, res) => {
+  app.delete('/api/tts/queue/:chapterId', requireAdminAuth, (req, res) => {
     res.json({ status: removeQueueItem(String(req.params.chapterId)) });
   });
 
@@ -499,14 +571,37 @@ export function createApiApp(): Express {
         return;
       }
 
+      const safeMode: ReadingMode = mode === 'narrator' ? 'narrator' : 'dramatized';
+      const safeVoiceMap = voiceMap ?? {};
+      const shouldForce = Boolean(forceRegenerate);
+
+      if (!shouldForce) {
+        const cacheKey = computeChapterCacheKey({
+          chapterId,
+          mode: safeMode,
+          turns,
+          voiceMap: safeVoiceMap,
+        });
+        const cached = readCachedAudio(cacheKey);
+        if (cached) {
+          res.setHeader('X-Audio-Cache', 'HIT');
+          res.json({ ...cached, cached: true });
+          return;
+        }
+      }
+
+      const authMiddleware = shouldForce ? requireAdminAuth : requireVerifiedAuth;
+      if (!(await runMiddleware(authMiddleware, req, res))) return;
+      if (!(await runMiddleware(aiRateLimiter, req, res))) return;
+
       const result = await runForegroundSynthesis({
         chapterId,
         bookTitle: bookTitle || 'Fábulas e Contos em Domínio Público',
         chapterTitle: chapterTitle || 'Conto',
-        mode: mode === 'narrator' ? 'narrator' : 'dramatized',
+        mode: safeMode,
         turns,
-        voiceMap: voiceMap ?? {},
-        forceRegenerate: Boolean(forceRegenerate),
+        voiceMap: safeVoiceMap,
+        forceRegenerate: shouldForce,
       });
 
       res.setHeader('X-Audio-Cache', result.cached ? 'HIT' : 'MISS');
@@ -528,7 +623,7 @@ export function createApiApp(): Express {
     }
   });
 
-  app.post('/api/chapters/analyze', async (req, res) => {
+  app.post('/api/chapters/analyze', requireVerifiedAuth, aiRateLimiter, async (req, res) => {
     try {
       const { title, rawText } = req.body as { title?: string; rawText?: string };
       const trimmedTitle = (title ?? '').trim();
@@ -566,23 +661,26 @@ export function createApiApp(): Express {
     try {
       const cacheKey = String(req.params.cacheKey);
       const meta = readCachedAudio(cacheKey);
-      if (!meta) {
+      const resolved = resolveAudioFile(cacheKey);
+      if (!meta || !resolved) {
         res.status(404).json({ error: 'Áudio não encontrado no cache.' });
         return;
       }
 
-      const filePath = getWavFilePath(cacheKey);
-      const stat = fs.statSync(filePath);
+      const stat = fs.statSync(resolved.filePath);
       const fileSize = stat.size;
       const range = req.headers.range;
 
-      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Type', resolved.mimeType);
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.setHeader('X-Audio-Cache', 'HIT');
 
       if (req.query.download === '1') {
-        const safeName = `${meta.chapterId}-${meta.mode}.wav`.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeName = `${meta.chapterId}-${meta.mode}.${resolved.ext}`.replace(
+          /[^a-zA-Z0-9._-]/g,
+          '_',
+        );
         res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
       }
 
@@ -598,16 +696,16 @@ export function createApiApp(): Express {
           res.status(206);
           res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
           res.setHeader('Content-Length', end - start + 1);
-          fs.createReadStream(filePath, { start, end }).pipe(res);
+          fs.createReadStream(resolved.filePath, { start, end }).pipe(res);
           return;
         }
       }
 
       res.setHeader('Content-Length', fileSize);
-      fs.createReadStream(filePath).pipe(res);
+      fs.createReadStream(resolved.filePath).pipe(res);
     } catch (err) {
       res.status(400).json({
-        error: err instanceof Error ? err.message : 'Erro ao servir o arquivo WAV.',
+        error: err instanceof Error ? err.message : 'Erro ao servir o arquivo de áudio.',
       });
     }
   });

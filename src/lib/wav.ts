@@ -6,6 +6,12 @@ export interface ParsedWav {
   durationSec: number;
 }
 
+export interface SilencePoint {
+  timeSec: number;
+  durationMs: number;
+  rms: number;
+}
+
 export interface WavClipInput {
   id: string;
   wavBuffer: Uint8Array;
@@ -233,4 +239,103 @@ export function concatWavClips(clips: WavClipInput[]): ConcatenatedWavResult {
     durationSec,
     timings,
   };
+}
+
+/**
+ * Scans 16-bit PCM audio in short windows to detect natural pause/silence midpoints
+ * so multi-turn TTS batch timings can snap cleanly to real inter-sentence gaps.
+ */
+export function findSilenceMidpoints(
+  parsed: ParsedWav,
+  options?: {
+    windowMs?: number;
+    minSilenceMs?: number;
+    thresholdRatio?: number;
+  },
+): SilencePoint[] {
+  if (parsed.bitsPerSample !== 16 || parsed.sampleRate <= 0 || parsed.numChannels <= 0) {
+    return [];
+  }
+
+  const windowMs = Math.max(10, options?.windowMs ?? 20);
+  const minSilenceMs = Math.max(60, options?.minSilenceMs ?? 160);
+  const thresholdRatio = options?.thresholdRatio ?? 0.05;
+
+  const bytesPerFrame = parsed.numChannels * 2;
+  const totalFrames = Math.floor(parsed.pcmData.byteLength / bytesPerFrame);
+  const framesPerWindow = Math.max(1, Math.round((parsed.sampleRate * windowMs) / 1000));
+  const windowCount = Math.floor(totalFrames / framesPerWindow);
+  if (windowCount < 3) {
+    return [];
+  }
+
+  const view = new DataView(
+    parsed.pcmData.buffer,
+    parsed.pcmData.byteOffset,
+    totalFrames * bytesPerFrame,
+  );
+  const windowRms: number[] = new Array(windowCount);
+
+  for (let w = 0; w < windowCount; w++) {
+    const startFrame = w * framesPerWindow;
+    let sumSquares = 0;
+    let sampleCount = 0;
+    for (let f = 0; f < framesPerWindow; f++) {
+      const frameOffset = (startFrame + f) * bytesPerFrame;
+      for (let ch = 0; ch < parsed.numChannels; ch++) {
+        const sample = view.getInt16(frameOffset + ch * 2, true);
+        sumSquares += sample * sample;
+        sampleCount += 1;
+      }
+    }
+    windowRms[w] = sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0;
+  }
+
+  const sortedRms = [...windowRms].sort((a, b) => a - b);
+  const p90Rms = sortedRms[Math.min(sortedRms.length - 1, Math.floor(sortedRms.length * 0.9))];
+  if (p90Rms < 250) {
+    return [];
+  }
+  const threshold = Math.max(120, p90Rms * thresholdRatio);
+  const actualWindowMs = (framesPerWindow / parsed.sampleRate) * 1000;
+  const minRunWindows = Math.max(1, Math.ceil(minSilenceMs / actualWindowMs));
+  const totalDurationSec = parsed.durationSec;
+
+  const silences: SilencePoint[] = [];
+  let runStart = -1;
+  let runRmsSum = 0;
+
+  const flushRun = (runEndExclusive: number) => {
+    if (runStart < 0) return;
+    const runLen = runEndExclusive - runStart;
+    if (runLen >= minRunWindows) {
+      const startSec = (runStart * framesPerWindow) / parsed.sampleRate;
+      const endSec = (runEndExclusive * framesPerWindow) / parsed.sampleRate;
+      const midSec = (startSec + endSec) / 2;
+      if (midSec > 0.15 && midSec < totalDurationSec - 0.15) {
+        silences.push({
+          timeSec: Number(midSec.toFixed(3)),
+          durationMs: Math.round((endSec - startSec) * 1000),
+          rms: Number((runRmsSum / runLen).toFixed(1)),
+        });
+      }
+    }
+    runStart = -1;
+    runRmsSum = 0;
+  };
+
+  for (let w = 0; w < windowCount; w++) {
+    if (windowRms[w] <= threshold) {
+      if (runStart < 0) {
+        runStart = w;
+        runRmsSum = 0;
+      }
+      runRmsSum += windowRms[w];
+    } else {
+      flushRun(w);
+    }
+  }
+  flushRun(windowCount);
+
+  return silences;
 }

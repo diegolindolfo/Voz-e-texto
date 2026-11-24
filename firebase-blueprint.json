@@ -58,20 +58,30 @@
         "mimeType": {
           "type": "string",
           "description": "Audio MIME type.",
-          "enum": ["audio/wav"]
+          "enum": ["audio/mpeg", "audio/wav"]
         },
         "storageType": {
           "type": "string",
-          "description": "Whether the binary WAV is stored in Firestore chunks or served from static CDN.",
-          "enum": ["chunks", "static"]
+          "description": "Whether the binary audio is stored in Firebase Storage, Firestore chunks, or served from static CDN.",
+          "enum": ["storage", "chunks", "static"]
         },
         "chunkCount": {
           "type": "integer",
-          "description": "Number of binary base64 chunks stored under the chunks subcollection (0 for static-only records, 1..60 for chunked records)."
+          "description": "Number of binary base64 chunks stored under the chunks subcollection (0 for storage/static records, 1..60 for chunked records)."
+        },
+        "storagePath": {
+          "type": "string",
+          "description": "Firebase Storage object path when storageType is 'storage'.",
+          "maxLength": 240
+        },
+        "downloadUrl": {
+          "type": "string",
+          "description": "Public download URL for Firebase Storage audio when storageType is 'storage'.",
+          "maxLength": 1000
         },
         "staticAudioUrl": {
           "type": "string",
-          "description": "Optional static CDN path for bundled pre-rendered WAV assets.",
+          "description": "Optional static CDN path for bundled pre-rendered audio assets.",
           "maxLength": 240
         },
         "segments": {
@@ -210,6 +220,146 @@
         }
       },
       "required": ["uid", "role", "createdAt"]
+    },
+    "CustomBook": {
+      "title": "CustomBook",
+      "description": "User- or curator-imported public-domain fable/story collection persisted in Firestore.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "year": {
+          "type": "integer"
+        },
+        "publicDomainSource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "coverUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "synopsis": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "gutenbergId": {
+          "type": "integer"
+        },
+        "isCustom": {
+          "type": "boolean"
+        },
+        "chapters": {
+          "type": "array",
+          "description": "1 to 60 structured chapters/fables in the collection."
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "author",
+        "year",
+        "publicDomainSource",
+        "coverUrl",
+        "synopsis",
+        "isCustom",
+        "chapters",
+        "isPublic",
+        "createdByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DramatizedScript": {
+      "title": "DramatizedScript",
+      "description": "AI-adjusted voice script, cast, and moral for a fable or story persisted in Firestore.",
+      "type": "object",
+      "properties": {
+        "chapterId": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "moral": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "aiNotes": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "characters": {
+          "type": "array"
+        },
+        "turns": {
+          "type": "array"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "chapterId",
+        "summary",
+        "characters",
+        "turns",
+        "isPublic",
+        "createdByUid",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -230,6 +380,18 @@
         "$ref": "#/entities/AdminRecord"
       },
       "description": "Read-only administrator allowlist."
+    },
+    "/customBooks/{bookId}": {
+      "schema": {
+        "$ref": "#/entities/CustomBook"
+      },
+      "description": "Custom public-domain fable/story collections imported by curators."
+    },
+    "/dramatizedScripts/{chapterId}": {
+      "schema": {
+        "$ref": "#/entities/DramatizedScript"
+      },
+      "description": "AI-dramatized scripts, voice casts, and moral lessons."
     }
   }
 }

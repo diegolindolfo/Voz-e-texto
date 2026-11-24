@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { STATIC_PRERENDERED_AUDIOS } from '../src/data/prerenderedAudioCatalog';
-import type { CachedAudioMetadata, CacheInventoryResponse, CacheSummaryItem } from '../src/types';
+import type {
+  AudioMimeType,
+  CachedAudioMetadata,
+  CacheInventoryResponse,
+  CacheSummaryItem,
+} from '../src/types';
 
 const BUNDLED_CACHE_DIR = path.resolve(process.cwd(), 'data', 'audio-cache');
 const PUBLIC_CACHE_DIR = path.resolve(process.cwd(), 'public', 'audio-cache');
@@ -10,6 +15,12 @@ const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCT
 const WRITABLE_CACHE_DIR = IS_SERVERLESS
   ? path.join(os.tmpdir(), 'voz-e-folha', 'audio-cache')
   : BUNDLED_CACHE_DIR;
+
+export interface ResolvedAudioFile {
+  filePath: string;
+  mimeType: AudioMimeType;
+  ext: 'mp3' | 'wav';
+}
 
 function ensureWritableDir(dir: string = WRITABLE_CACHE_DIR): void {
   try {
@@ -28,22 +39,35 @@ function sanitizeKey(cacheKey: string): string {
   return cacheKey;
 }
 
-export function getWavFilePath(cacheKey: string): string {
+export function resolveAudioFile(cacheKey: string): ResolvedAudioFile | null {
   const safe = sanitizeKey(cacheKey);
   ensureWritableDir();
-  const writableWav = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
-  if (fs.existsSync(writableWav)) {
-    return writableWav;
+  const dirs = Array.from(new Set([WRITABLE_CACHE_DIR, BUNDLED_CACHE_DIR, PUBLIC_CACHE_DIR]));
+  const formats: Array<{ ext: 'mp3' | 'wav'; mimeType: AudioMimeType }> = [
+    { ext: 'mp3', mimeType: 'audio/mpeg' },
+    { ext: 'wav', mimeType: 'audio/wav' },
+  ];
+
+  for (const dir of dirs) {
+    for (const fmt of formats) {
+      const candidate = path.join(dir, `${safe}.${fmt.ext}`);
+      if (fs.existsSync(candidate)) {
+        return {
+          filePath: candidate,
+          mimeType: fmt.mimeType,
+          ext: fmt.ext,
+        };
+      }
+    }
   }
-  const bundledWav = path.join(BUNDLED_CACHE_DIR, `${safe}.wav`);
-  if (fs.existsSync(bundledWav)) {
-    return bundledWav;
-  }
-  const publicWav = path.join(PUBLIC_CACHE_DIR, `${safe}.wav`);
-  if (fs.existsSync(publicWav)) {
-    return publicWav;
-  }
-  return writableWav;
+  return null;
+}
+
+export function getWavFilePath(cacheKey: string): string {
+  const resolved = resolveAudioFile(cacheKey);
+  if (resolved) return resolved.filePath;
+  const safe = sanitizeKey(cacheKey);
+  return path.join(WRITABLE_CACHE_DIR, `${safe}.mp3`);
 }
 
 function resolveMetaFilePath(cacheKey: string): string {
@@ -72,19 +96,20 @@ export function readCachedAudio(cacheKey: string): CachedAudioMetadata | null {
       return staticEntry;
     }
 
-    const wavPath = getWavFilePath(safe);
+    const resolvedAudio = resolveAudioFile(safe);
     const metaPath = resolveMetaFilePath(safe);
-    if (!fs.existsSync(wavPath) || !fs.existsSync(metaPath)) {
+    if (!resolvedAudio || !fs.existsSync(metaPath)) {
       return null;
     }
     const raw = fs.readFileSync(metaPath, 'utf-8');
     const parsed = JSON.parse(raw) as CachedAudioMetadata;
-    const stats = fs.statSync(wavPath);
+    const stats = fs.statSync(resolvedAudio.filePath);
     if (stats.size < 44) {
       return null;
     }
     return {
       ...parsed,
+      mimeType: parsed.mimeType ?? resolvedAudio.mimeType,
       fileSizeBytes: stats.size,
       audioUrl: `/api/audio/${safe}`,
     };
@@ -96,26 +121,29 @@ export function readCachedAudio(cacheKey: string): CachedAudioMetadata | null {
 
 export function writeCachedAudio(
   cacheKey: string,
-  wavBytes: Uint8Array,
+  audioBytes: Uint8Array,
   metadata: Omit<CachedAudioMetadata, 'cacheKey' | 'fileSizeBytes' | 'audioUrl' | 'createdAt'>,
 ): CachedAudioMetadata {
   const safe = sanitizeKey(cacheKey);
   ensureWritableDir();
-  const wavPath = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
+  const mimeType: AudioMimeType = metadata.mimeType === 'audio/wav' ? 'audio/wav' : 'audio/mpeg';
+  const ext = mimeType === 'audio/wav' ? 'wav' : 'mp3';
+  const audioPath = path.join(WRITABLE_CACHE_DIR, `${safe}.${ext}`);
   const metaPath = path.join(WRITABLE_CACHE_DIR, `${safe}.json`);
-  const tmpWavPath = `${wavPath}.tmp`;
+  const tmpAudioPath = `${audioPath}.tmp`;
   const tmpMetaPath = `${metaPath}.tmp`;
 
   const fullMeta: CachedAudioMetadata = {
     ...metadata,
+    mimeType,
     cacheKey: safe,
-    fileSizeBytes: wavBytes.byteLength,
+    fileSizeBytes: audioBytes.byteLength,
     createdAt: new Date().toISOString(),
     audioUrl: `/api/audio/${safe}`,
   };
 
-  fs.writeFileSync(tmpWavPath, wavBytes);
-  fs.renameSync(tmpWavPath, wavPath);
+  fs.writeFileSync(tmpAudioPath, audioBytes);
+  fs.renameSync(tmpAudioPath, audioPath);
 
   fs.writeFileSync(tmpMetaPath, JSON.stringify(fullMeta, null, 2), 'utf-8');
   fs.renameSync(tmpMetaPath, metaPath);
@@ -167,18 +195,19 @@ export function listCachedAudios(): CacheInventoryResponse {
 export function deleteCachedAudio(cacheKey: string): boolean {
   const safe = sanitizeKey(cacheKey);
   ensureWritableDir();
-  const wavPath = path.join(WRITABLE_CACHE_DIR, `${safe}.wav`);
-  const metaPath = path.join(WRITABLE_CACHE_DIR, `${safe}.json`);
+  const pathsToDelete = [
+    path.join(WRITABLE_CACHE_DIR, `${safe}.mp3`),
+    path.join(WRITABLE_CACHE_DIR, `${safe}.wav`),
+    path.join(WRITABLE_CACHE_DIR, `${safe}.json`),
+  ];
   let removed = false;
 
   try {
-    if (fs.existsSync(wavPath)) {
-      fs.unlinkSync(wavPath);
-      removed = true;
-    }
-    if (fs.existsSync(metaPath)) {
-      fs.unlinkSync(metaPath);
-      removed = true;
+    for (const target of pathsToDelete) {
+      if (fs.existsSync(target)) {
+        fs.unlinkSync(target);
+        removed = true;
+      }
     }
   } catch {
     // Bundled read-only files in Vercel cannot be unlinked from disk

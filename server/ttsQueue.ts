@@ -114,13 +114,14 @@ export async function runForegroundSynthesis(params: {
           },
         });
 
-        const saved = writeCachedAudio(cacheKey, result.wavBuffer, {
+        const saved = writeCachedAudio(cacheKey, result.audioBuffer, {
           chapterId: params.chapterId,
           bookTitle: params.bookTitle,
           chapterTitle: params.chapterTitle,
           mode: safeMode,
           voiceMap: safeVoiceMap,
           durationSec: result.durationSec,
+          mimeType: result.mimeType,
           segments: result.segments,
         });
 
@@ -195,13 +196,14 @@ function scheduleBackgroundWorker(): void {
               },
             });
 
-            writeCachedAudio(nextTask.cacheKey, result.wavBuffer, {
+            writeCachedAudio(nextTask.cacheKey, result.audioBuffer, {
               chapterId: nextTask.item.chapterId,
               bookTitle: nextTask.bookTitle,
               chapterTitle: nextTask.item.chapterTitle,
               mode: nextTask.item.mode,
               voiceMap: nextTask.voiceMap,
               durationSec: result.durationSec,
+              mimeType: result.mimeType,
               segments: result.segments,
             });
             nextTask.item.status = 'done';

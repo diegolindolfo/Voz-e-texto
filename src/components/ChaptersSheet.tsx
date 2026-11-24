@@ -9,6 +9,7 @@ interface ChaptersContentProps {
   selectedBookId: string;
   selectedChapterId: string;
   cachedChapterIds: Set<string>;
+  isCuratorMode?: boolean;
   onSelectChapter: (bookId: string, chapterId: string) => void;
   onOpenAddBook: () => void;
   onOpenImport: () => void;
@@ -22,6 +23,7 @@ export function ChaptersListContent({
   selectedBookId,
   selectedChapterId,
   cachedChapterIds,
+  isCuratorMode = false,
   onSelectChapter,
   onOpenAddBook,
   onOpenImport,
@@ -29,14 +31,15 @@ export function ChaptersListContent({
   onDeleteBook,
   isSheet = false,
 }: ChaptersContentProps) {
-  const [activeBookTabId, setActiveBookTabId] = useState<string>(selectedBookId);
+  const [tabSelection, setTabSelection] = useState<{
+    baseSelectedId: string;
+    tabId: string;
+  } | null>(null);
+  const activeBookTabId =
+    tabSelection?.baseSelectedId === selectedBookId ? tabSelection.tabId : selectedBookId;
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyCached, setOnlyCached] = useState(false);
   const activeRowRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    setActiveBookTabId(selectedBookId);
-  }, [selectedBookId]);
 
   const displayedBook = useMemo(
     () => books.find((b) => b.id === activeBookTabId) ?? books[0],
@@ -99,7 +102,7 @@ export function ChaptersListContent({
                 role="tab"
                 aria-selected={active}
                 onClick={() => {
-                  setActiveBookTabId(book.id);
+                  setTabSelection({ baseSelectedId: selectedBookId, tabId: book.id });
                   setSearchQuery('');
                   setOnlyCached(false);
                 }}
@@ -129,7 +132,7 @@ export function ChaptersListContent({
             <h2 className="font-editorial text-base font-semibold text-[#14171F] dark:text-[#EAECEF] leading-snug">
               {displayedBook.title}
             </h2>
-            {displayedBook.isCustom && onDeleteBook && (
+            {isCuratorMode && displayedBook.isCustom && onDeleteBook && (
               <button
                 type="button"
                 onClick={() => onDeleteBook(displayedBook.id)}
@@ -145,7 +148,7 @@ export function ChaptersListContent({
             {displayedBook.author} · {displayedBook.year}
           </p>
           <p className="text-[11px] text-[#5A6474] dark:text-[#9AA4B2] mt-1 font-mono-tabular">
-            {cachedCountInBook} de {displayedBook.chapters.length} pré-renderizadas (.wav)
+            {cachedCountInBook} de {displayedBook.chapters.length} com áudio pronto
           </p>
           {currentIdxInBook >= 0 && displayedBook.chapters.length > 1 && (
             <div className="mt-1.5 h-[2px] w-full bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
@@ -213,7 +216,7 @@ export function ChaptersListContent({
                   : 'text-[#5A6474] dark:text-[#9AA4B2]'
               }`}
             >
-              Pré-renderizadas ({cachedCountInBook})
+              Com áudio ({cachedCountInBook})
             </button>
           </div>
         </div>
@@ -230,7 +233,7 @@ export function ChaptersListContent({
         {filteredChapters.length === 0 ? (
           <p className="py-8 text-center text-xs text-[#5A6474] dark:text-[#9AA4B2]">
             {onlyCached
-              ? 'Nenhuma história desta coleção foi pré-renderizada em WAV ainda.'
+              ? 'Nenhuma história desta coleção possui áudio pronto ainda.'
               : `Nenhuma história encontrada para "${searchQuery}".`}
           </p>
         ) : (
@@ -262,8 +265,12 @@ export function ChaptersListContent({
                         {chapter.title}
                       </p>
                       <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
-                        <span>{chapter.dramatizedByAi ? 'Pré-ajustado IA' : 'Texto'}</span>
-                        <span aria-hidden="true"> · </span>
+                        {isCuratorMode ? (
+                          <>
+                            <span>{chapter.dramatizedByAi ? 'Pré-ajustado IA' : 'Texto'}</span>
+                            <span aria-hidden="true"> · </span>
+                          </>
+                        ) : null}
                         <span>
                           {chapter.characterCount}{' '}
                           {chapter.characterCount === 1 ? 'voz' : 'vozes'}
@@ -271,7 +278,7 @@ export function ChaptersListContent({
                         <span aria-hidden="true"> · </span>
                         {isCached ? (
                           <span className="text-[#1E3A5F] dark:text-[#7FA6D6] font-medium">
-                            Pré-renderizado WAV
+                            Áudio pronto
                           </span>
                         ) : (
                           <span>~{chapter.estimatedMinutes} min</span>
@@ -286,37 +293,39 @@ export function ChaptersListContent({
         )}
       </div>
 
-      {/* Pre-render collection + Add new collection + quick fable import */}
-      <div className="pt-1 space-y-2 shrink-0">
-        {uncachedCountInBook > 0 && onPrerenderBook && (
+      {/* Curator actions: Pre-render collection + Add new collection + quick fable import */}
+      {isCuratorMode && (
+        <div className="pt-1 space-y-2 shrink-0">
+          {uncachedCountInBook > 0 && onPrerenderBook && (
+            <button
+              type="button"
+              onClick={() => onPrerenderBook(displayedBook.id)}
+              className="w-full min-h-[42px] px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-xs font-semibold text-[#1E3A5F] dark:text-[#7FA6D6] hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <Layers className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Pré-renderizar coleção ({uncachedCountInBook} em MP3)</span>
+            </button>
+          )}
+
           <button
             type="button"
-            onClick={() => onPrerenderBook(displayedBook.id)}
-            className="w-full min-h-[42px] px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-xs font-semibold text-[#1E3A5F] dark:text-[#7FA6D6] hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
+            onClick={onOpenAddBook}
+            className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-sm font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] flex items-center justify-center gap-2 transition-colors whitespace-nowrap cursor-pointer"
           >
-            <Layers className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span>Pré-renderizar coleção ({uncachedCountInBook} em WAV)</span>
+            <BookPlus className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>Adicionar coleção</span>
           </button>
-        )}
 
-        <button
-          type="button"
-          onClick={onOpenAddBook}
-          className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-sm font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] flex items-center justify-center gap-2 transition-colors whitespace-nowrap cursor-pointer"
-        >
-          <BookPlus className="w-4 h-4 shrink-0" aria-hidden="true" />
-          <span>Adicionar coleção</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onOpenImport}
-          className="w-full min-h-[42px] px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-xs font-medium text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF] hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-        >
-          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          <span>Importar fábula ou conto com IA</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={onOpenImport}
+            className="w-full min-h-[42px] px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-xs font-medium text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF] hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span>Importar fábula ou conto com IA</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -333,6 +342,7 @@ export function ChaptersSheet({
   selectedBookId,
   selectedChapterId,
   cachedChapterIds,
+  isCuratorMode = false,
   onSelectChapter,
   onOpenAddBook,
   onOpenImport,
@@ -375,6 +385,7 @@ export function ChaptersSheet({
             selectedBookId={selectedBookId}
             selectedChapterId={selectedChapterId}
             cachedChapterIds={cachedChapterIds}
+            isCuratorMode={isCuratorMode}
             isSheet
             onSelectChapter={(bookId, chapterId) => {
               onSelectChapter(bookId, chapterId);

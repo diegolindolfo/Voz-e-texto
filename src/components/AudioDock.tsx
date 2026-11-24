@@ -128,7 +128,7 @@ export function AudioDock({
                   <button
                     type="button"
                     onClick={onOpenVoices}
-                    aria-label="Abrir vozes e cache WAV"
+                    aria-label="Configurar vozes"
                     className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors cursor-pointer"
                   >
                     <SlidersHorizontal className="w-[18px] h-[18px]" aria-hidden="true" />
@@ -232,7 +232,7 @@ export function AudioDock({
                     <button
                       type="button"
                       onClick={onDownloadAudio}
-                      aria-label="Baixar arquivo WAV pré-renderizado"
+                      aria-label="Baixar áudio da história (.mp3)"
                       className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors cursor-pointer"
                     >
                       <Download className="w-[18px] h-[18px]" aria-hidden="true" />
@@ -241,7 +241,7 @@ export function AudioDock({
                   <button
                     type="button"
                     onClick={onOpenVoices}
-                    aria-label="Abrir vozes e cache WAV"
+                    aria-label="Configurar vozes"
                     className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors cursor-pointer"
                   >
                     <SlidersHorizontal className="w-[18px] h-[18px]" aria-hidden="true" />
@@ -271,15 +271,13 @@ export function AudioDock({
                   <>
                     <Loader2 className="w-4 h-4 animate-spin shrink-0" aria-hidden="true" />
                     <span className="truncate">
-                      {synthesisProgressLabel || 'Pré-renderizando vozes…'}
+                      {synthesisProgressLabel || 'Preparando vozes…'}
                     </span>
                   </>
                 ) : (
                   <>
                     <Play className="w-4 h-4 fill-current shrink-0" aria-hidden="true" />
-                    <span>
-                      {isCachedOnServer ? 'Ouvir pré-renderizado (.wav)' : 'Ouvir história'}
-                    </span>
+                    <span>{isCachedOnServer ? 'Ouvir história' : 'Ouvir história'}</span>
                   </>
                 )}
               </button>
@@ -287,7 +285,7 @@ export function AudioDock({
               <button
                 type="button"
                 onClick={onOpenVoices}
-                aria-label="Configurar vozes e cache"
+                aria-label="Configurar vozes"
                 className="min-h-[46px] min-w-[46px] flex items-center justify-center rounded-xl border border-neutral-200 dark:border-neutral-800 text-[#14171F] dark:text-[#EAECEF] hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer shrink-0"
               >
                 <SlidersHorizontal className="w-5 h-5" aria-hidden="true" />

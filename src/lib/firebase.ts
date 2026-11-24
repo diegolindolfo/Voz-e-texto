@@ -7,11 +7,20 @@ import {
   type User,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'diegolindolfo100@gmail.com';
+
+export function isAdminUser(user: User | null): boolean {
+  if (!user || !user.emailVerified || !user.email) return false;
+  return user.email.trim().toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
+}
+
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const storage = getStorage(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });

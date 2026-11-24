@@ -4,7 +4,7 @@ import {
   loadWavBlobFromFirestore,
 } from './prerenderedAudioStore';
 
-const CACHE_NAME = 'voz-e-folha-wav-v1';
+const CACHE_NAME = 'voz-e-folha-audio-v2';
 
 function toBrowserCacheKey(audioUrl: string): string {
   if (isFirestoreAudioUrl(audioUrl)) {
@@ -14,12 +14,22 @@ function toBrowserCacheKey(audioUrl: string): string {
   return audioUrl;
 }
 
+function inferContentType(audioUrl: string, mimeType?: string): string {
+  if (mimeType === 'audio/wav' || /\.wav(\?|$)/i.test(audioUrl) || isFirestoreAudioUrl(audioUrl)) {
+    return 'audio/wav';
+  }
+  return 'audio/mpeg';
+}
+
 /**
- * Fetches a WAV file from the browser Cache API first (offline/instant local cache),
- * falling back to Firestore chunks (`firestore://...`) or HTTP (`/audio-cache/...` or `/api/audio/...`)
- * and caching a local copy for instant zero-read replays.
+ * Fetches an audio file (MP3 or WAV) from the browser Cache API first (offline/instant local cache),
+ * falling back to Firebase Storage HTTPS URL, legacy Firestore chunks (`firestore://...`),
+ * or HTTP (`/audio-cache/...` or `/api/audio/...`) and caching a local copy for instant replays.
  */
-export async function getPlayableAudioBlobUrl(audioUrl: string): Promise<{
+export async function getPlayableAudioBlobUrl(
+  audioUrl: string,
+  mimeType?: string,
+): Promise<{
   blobUrl: string;
   fromBrowserCache: boolean;
 }> {
@@ -47,7 +57,7 @@ export async function getPlayableAudioBlobUrl(audioUrl: string): Promise<{
       await cache.put(
         cacheKeyUrl,
         new Response(blob.slice(0), {
-          headers: { 'Content-Type': 'audio/wav' },
+          headers: { 'Content-Type': inferContentType(audioUrl, mimeType) },
         }),
       );
       return { blobUrl: URL.createObjectURL(blob), fromBrowserCache: false };
@@ -55,7 +65,7 @@ export async function getPlayableAudioBlobUrl(audioUrl: string): Promise<{
 
     const networkResponse = await fetch(audioUrl);
     if (!networkResponse.ok) {
-      throw new Error('Não foi possível baixar o arquivo WAV em cache.');
+      throw new Error('Não foi possível baixar o arquivo de áudio em cache.');
     }
 
     const clone = networkResponse.clone();
@@ -71,9 +81,9 @@ export async function getPlayableAudioBlobUrl(audioUrl: string): Promise<{
 }
 
 /**
- * Reads raw WAV bytes from browser Cache API or HTTP URL so they can be persisted into Firestore.
+ * Reads raw audio bytes from browser Cache API or HTTP URL so they can be uploaded to Firebase Storage.
  */
-export async function fetchWavBytesForStorage(audioUrl: string): Promise<Uint8Array> {
+export async function fetchAudioBytesForStorage(audioUrl: string): Promise<Uint8Array> {
   if (isFirestoreAudioUrl(audioUrl)) {
     const blob = await loadWavBlobFromFirestore(extractCacheKeyFromFirestoreUrl(audioUrl));
     return new Uint8Array(await blob.arrayBuffer());
@@ -94,20 +104,27 @@ export async function fetchWavBytesForStorage(audioUrl: string): Promise<Uint8Ar
 
   const res = await fetch(audioUrl);
   if (!res.ok) {
-    throw new Error('Não foi possível obter os bytes do arquivo WAV para salvar no banco.');
+    throw new Error('Não foi possível obter os bytes do arquivo de áudio para salvar na nuvem.');
   }
   return new Uint8Array(await res.arrayBuffer());
 }
 
+export const fetchWavBytesForStorage = fetchAudioBytesForStorage;
+
 /**
- * Triggers a clean browser download for both HTTP and Firestore-stored WAV files.
+ * Triggers a clean browser download for HTTP, Firebase Storage, and legacy Firestore audio files.
  */
-export async function downloadWavFile(audioUrl: string, filename: string): Promise<void> {
-  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const { blobUrl } = await getPlayableAudioBlobUrl(audioUrl);
+export async function downloadAudioFile(
+  audioUrl: string,
+  filename: string,
+  mimeType?: string,
+): Promise<void> {
+  const safeBase = filename.replace(/\.(mp3|wav)$/i, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const ext = inferContentType(audioUrl, mimeType) === 'audio/wav' ? 'wav' : 'mp3';
+  const { blobUrl } = await getPlayableAudioBlobUrl(audioUrl, mimeType);
   const link = document.createElement('a');
   link.href = blobUrl;
-  link.download = safeName.endsWith('.wav') ? safeName : `${safeName}.wav`;
+  link.download = `${safeBase}.${ext}`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -115,6 +132,8 @@ export async function downloadWavFile(audioUrl: string, filename: string): Promi
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
   }
 }
+
+export const downloadWavFile = downloadAudioFile;
 
 export async function evictBrowserAudioCache(audioUrl: string): Promise<void> {
   if (typeof window === 'undefined' || !('caches' in window)) return;

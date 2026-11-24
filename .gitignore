@@ -7,5 +7,6 @@ coverage/
 .env*
 !.env.example
 .vercel/
+api/index.js
 data/audio-cache/partials/
 data/audio-cache/*.tmp

@@ -1,4 +1,4 @@
-import type { AudioSegmentTiming, PrebuiltVoiceName, ReadingMode } from '../types';
+import type { AudioMimeType, AudioSegmentTiming, PrebuiltVoiceName, ReadingMode } from '../types';
 
 export const MAX_RAW_CHUNK_BYTES = 450_000; // ~600KB base64, safely under Firestore's 1MB doc limit
 export const MAX_BASE64_CHUNK_LENGTH = 750_000;
@@ -10,6 +10,8 @@ export const MAX_ID_LENGTH = 128;
 export const MAX_BOOK_OR_CHAPTER_ID_LENGTH = 120;
 export const MAX_DISPLAY_NAME_LENGTH = 120;
 export const MAX_STATIC_URL_LENGTH = 240;
+export const MAX_STORAGE_PATH_LENGTH = 240;
+export const MAX_DOWNLOAD_URL_LENGTH = 1000;
 
 export const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 export const CHUNK_ID_PATTERN = /^chunk-[0-9]{3}$/;
@@ -31,9 +33,11 @@ export interface PrerenderedAudioWritePayload {
   voiceMap: Record<string, PrebuiltVoiceName>;
   durationSec: number;
   fileSizeBytes: number;
-  mimeType: 'audio/wav';
-  storageType: 'chunks' | 'static';
+  mimeType: AudioMimeType;
+  storageType: 'storage' | 'chunks' | 'static';
   chunkCount: number;
+  storagePath?: string;
+  downloadUrl?: string;
   staticAudioUrl?: string;
   segments: AudioSegmentTiming[];
   status: 'uploading' | 'ready';
@@ -217,6 +221,14 @@ export function sanitizePrerenderedAudioPayload(
   );
   const chunkCount = Math.min(MAX_AUDIO_CHUNKS, Math.max(0, Math.round(input.chunkCount)));
 
+  const mimeType: AudioMimeType = input.mimeType === 'audio/wav' ? 'audio/wav' : 'audio/mpeg';
+  const storageType: 'storage' | 'chunks' | 'static' =
+    input.storageType === 'static'
+      ? 'static'
+      : input.storageType === 'storage'
+        ? 'storage'
+        : 'chunks';
+
   const result: PrerenderedAudioWritePayload = {
     cacheKey,
     chapterId,
@@ -227,8 +239,8 @@ export function sanitizePrerenderedAudioPayload(
     voiceMap: sanitizedVoiceMap,
     durationSec,
     fileSizeBytes,
-    mimeType: 'audio/wav',
-    storageType: input.storageType === 'static' ? 'static' : 'chunks',
+    mimeType,
+    storageType,
     chunkCount,
     segments: sanitizedSegments,
     status: input.status === 'ready' ? 'ready' : 'uploading',
@@ -237,6 +249,12 @@ export function sanitizePrerenderedAudioPayload(
     createdByName,
   };
 
+  if (input.storagePath && input.storagePath.trim().length > 0) {
+    result.storagePath = input.storagePath.trim().slice(0, MAX_STORAGE_PATH_LENGTH);
+  }
+  if (input.downloadUrl && input.downloadUrl.trim().length > 0) {
+    result.downloadUrl = input.downloadUrl.trim().slice(0, MAX_DOWNLOAD_URL_LENGTH);
+  }
   if (input.staticAudioUrl && input.staticAudioUrl.trim().length > 0) {
     result.staticAudioUrl = input.staticAudioUrl.trim().slice(0, MAX_STATIC_URL_LENGTH);
   }

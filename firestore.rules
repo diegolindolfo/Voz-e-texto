@@ -90,6 +90,8 @@ service cloud.firestore {
           'mimeType',
           'storageType',
           'chunkCount',
+          'storagePath',
+          'downloadUrl',
           'staticAudioUrl',
           'segments',
           'status',
@@ -128,11 +130,29 @@ service cloud.firestore {
         && (data.fileSizeBytes is int)
         && data.fileSizeBytes >= 44
         && data.fileSizeBytes <= 25000000
-        && data.mimeType == 'audio/wav'
-        && data.storageType in ['chunks', 'static']
+        && data.mimeType in ['audio/mpeg', 'audio/wav']
+        && data.storageType in ['storage', 'chunks', 'static']
         && (data.chunkCount is int)
         && data.chunkCount >= 0
         && data.chunkCount <= 60
+        && (
+          !('storagePath' in data)
+          || (
+            data.storagePath is string
+            && data.storagePath.size() >= 1
+            && data.storagePath.size() <= 240
+            && data.storagePath.matches('^prerendered-audios/[a-zA-Z0-9_\\-]+\\.(mp3|wav)$')
+          )
+        )
+        && (
+          !('downloadUrl' in data)
+          || (
+            data.downloadUrl is string
+            && data.downloadUrl.size() >= 10
+            && data.downloadUrl.size() <= 1000
+            && data.downloadUrl.matches('^https://.*')
+          )
+        )
         && (
           !('staticAudioUrl' in data)
           || (data.staticAudioUrl is string && data.staticAudioUrl.size() >= 1 && data.staticAudioUrl.size() <= 240)
@@ -213,6 +233,139 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // Validation Blueprint: CustomBook
+    // =========================================================================
+    function isValidCustomBook(data, bookId) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'author',
+          'year',
+          'publicDomainSource',
+          'coverUrl',
+          'synopsis',
+          'isCustom',
+          'chapters',
+          'isPublic',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'title',
+          'author',
+          'year',
+          'publicDomainSource',
+          'coverUrl',
+          'synopsis',
+          'gutenbergId',
+          'isCustom',
+          'chapters',
+          'isPublic',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.id is string
+        && data.id == bookId
+        && data.id.size() >= 2
+        && data.id.size() <= 120
+        && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 200
+        && data.author is string
+        && data.author.size() >= 1
+        && data.author.size() <= 200
+        && data.year is int
+        && data.year >= 1000
+        && data.year <= 2100
+        && data.publicDomainSource is string
+        && data.publicDomainSource.size() >= 1
+        && data.publicDomainSource.size() <= 240
+        && data.coverUrl is string
+        && data.coverUrl.size() <= 500
+        && data.synopsis is string
+        && data.synopsis.size() <= 1000
+        && (
+          !('gutenbergId' in data)
+          || (data.gutenbergId is int && data.gutenbergId >= 1 && data.gutenbergId <= 999999)
+        )
+        && data.isCustom is bool
+        && data.chapters is list
+        && data.chapters.size() >= 1
+        && data.chapters.size() <= 60
+        && data.chapters[0] is map
+        && data.isPublic is bool
+        && data.createdByUid is string
+        && data.createdByUid.size() >= 1
+        && data.createdByUid.size() <= 128
+        && data.createdByUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Validation Blueprint: DramatizedScript
+    // =========================================================================
+    function isValidDramatizedScript(data, chapterId) {
+      return data.keys().hasAll([
+          'chapterId',
+          'summary',
+          'characters',
+          'turns',
+          'isPublic',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'chapterId',
+          'summary',
+          'moral',
+          'aiNotes',
+          'characters',
+          'turns',
+          'isPublic',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.chapterId is string
+        && data.chapterId == chapterId
+        && data.chapterId.size() >= 2
+        && data.chapterId.size() <= 120
+        && data.chapterId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.summary is string
+        && data.summary.size() >= 1
+        && data.summary.size() <= 600
+        && (
+          !('moral' in data)
+          || (data.moral is string && data.moral.size() <= 600)
+        )
+        && (
+          !('aiNotes' in data)
+          || (data.aiNotes is string && data.aiNotes.size() <= 400)
+        )
+        && data.characters is list
+        && data.characters.size() >= 1
+        && data.characters.size() <= 16
+        && data.characters[0] is map
+        && data.turns is list
+        && data.turns.size() >= 1
+        && data.turns.size() <= 80
+        && data.turns[0] is map
+        && data.isPublic is bool
+        && data.createdByUid is string
+        && data.createdByUid.size() >= 1
+        && data.createdByUid.size() <= 128
+        && data.createdByUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
     // Collection: /prerenderedAudios/{cacheKey}
     // =========================================================================
     match /prerenderedAudios/{cacheKey} {
@@ -238,6 +391,7 @@ service cloud.firestore {
         && (
           (incoming().storageType == 'chunks' && incoming().status == 'uploading' && incoming().chunkCount >= 1)
           || (incoming().storageType == 'static' && incoming().status == 'ready' && incoming().chunkCount == 0 && ('staticAudioUrl' in incoming()))
+          || (incoming().storageType == 'storage' && incoming().status == 'ready' && incoming().chunkCount == 0 && ('storagePath' in incoming()) && ('downloadUrl' in incoming()))
         );
 
       // Action-Based Update: validation blueprint MUST wrap entire update logic
@@ -340,6 +494,73 @@ service cloud.firestore {
         && (request.auth.uid == adminId || isBootstrappedAdmin());
       allow list: if false;
       allow create, update, delete: if false;
+    }
+
+    // =========================================================================
+    // Collection: /customBooks/{bookId}
+    // =========================================================================
+    match /customBooks/{bookId} {
+      allow get: if isValidId(bookId) && (
+        existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isAdmin()
+      );
+
+      // Secure list query — strictly evaluates resource.data with zero get()/exists() calls
+      allow list: if existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isBootstrappedAdmin();
+
+      allow create: if isAdmin()
+        && isValidId(bookId)
+        && isValidCustomBook(incoming(), bookId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(bookId)
+        && isValidCustomBook(incoming(), bookId)
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isAdmin() && isValidId(bookId);
+    }
+
+    // =========================================================================
+    // Collection: /dramatizedScripts/{chapterId}
+    // =========================================================================
+    match /dramatizedScripts/{chapterId} {
+      allow get: if isValidId(chapterId) && (
+        existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isAdmin()
+      );
+
+      // Secure list query — strictly evaluates resource.data with zero get()/exists() calls
+      allow list: if existing().isPublic == true
+        || (isSignedIn() && existing().createdByUid == request.auth.uid)
+        || isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(chapterId)
+        && isValidDramatizedScript(incoming(), chapterId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(chapterId)
+        && isValidDramatizedScript(incoming(), chapterId)
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow delete: if isVerifiedUser()
+        && isValidId(chapterId)
+        && (existing().createdByUid == request.auth.uid || isAdmin());
     }
   }
 }

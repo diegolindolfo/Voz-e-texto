@@ -223,13 +223,22 @@ export function batchTurnsForTts(
   return batches;
 }
 
+function computeTurnTimingWeight(text: string): number {
+  const trimmed = text.trim();
+  const sentenceStops = (trimmed.match(/[.!?…]+/g) ?? []).length;
+  const minorPauses = (trimmed.match(/[,;:—]+/g) ?? []).length;
+  return Math.max(1, trimmed.length + sentenceStops * 12 + minorPauses * 4);
+}
+
 /**
- * Maps merged batch WAV timestamps back to individual turns weighted by text length
- * so every paragraph remains clickable and highlightable during playback.
+ * Maps merged batch WAV timestamps back to individual turns, snapping split boundaries
+ * to real detected PCM silence gaps when available (falling back to punctuation-weighted
+ * text proportionality).
  */
 export function expandBatchTimingsToTurns(
   batches: TtsTurnBatch[],
   batchTimings: Array<{ id: string; startSec: number; endSec: number }>,
+  batchSilences?: Array<Array<{ timeSec: number; durationMs: number }>>,
 ): AudioSegmentTiming[] {
   const segments: AudioSegmentTiming[] = [];
 
@@ -238,23 +247,69 @@ export function expandBatchTimingsToTurns(
     const timing = batchTimings[i];
     if (!timing) continue;
 
-    const span = Math.max(0, timing.endSec - timing.startSec);
-    const weights = batch.turns.map((item) => Math.max(1, item.turn.text.length));
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    if (batch.turns.length === 1) {
+      const only = batch.turns[0];
+      segments.push({
+        turnId: only.turn.id,
+        speaker: only.turn.speaker,
+        voiceName: only.voiceName,
+        startSec: Number(timing.startSec.toFixed(3)),
+        endSec: Number(timing.endSec.toFixed(3)),
+      });
+      continue;
+    }
 
-    let cursor = timing.startSec;
+    const span = Math.max(0, timing.endSec - timing.startSec);
+    const weights = batch.turns.map((item) => computeTurnTimingWeight(item.turn.text));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    const silences = batchSilences?.[i] ?? [];
+    const searchRadiusSec = Math.min(4.5, Math.max(1.5, span * 0.28));
+
+    const boundaryOffsets: number[] = [0];
+    let accumWeight = 0;
+    let prevSplitSec = 0;
+
+    for (let j = 0; j < batch.turns.length - 1; j++) {
+      accumWeight += weights[j];
+      const expectedSec = (span * accumWeight) / totalWeight;
+      const minAllowed = prevSplitSec + 0.25;
+      const remainingTurns = batch.turns.length - 1 - j;
+      const maxAllowed = Math.max(minAllowed, span - remainingTurns * 0.25);
+
+      let chosenSplitSec = Math.min(maxAllowed, Math.max(minAllowed, expectedSec));
+
+      if (silences.length > 0) {
+        let bestCandidate: { timeSec: number; score: number } | null = null;
+        for (const s of silences) {
+          if (s.timeSec < minAllowed || s.timeSec > maxAllowed) continue;
+          const dist = Math.abs(s.timeSec - expectedSec);
+          if (dist > searchRadiusSec) continue;
+          const score = s.durationMs - dist * 140;
+          if (!bestCandidate || score > bestCandidate.score) {
+            bestCandidate = { timeSec: s.timeSec, score };
+          }
+        }
+        if (bestCandidate) {
+          chosenSplitSec = bestCandidate.timeSec;
+        }
+      }
+
+      boundaryOffsets.push(chosenSplitSec);
+      prevSplitSec = chosenSplitSec;
+    }
+    boundaryOffsets.push(span);
+
     for (let j = 0; j < batch.turns.length; j++) {
       const item = batch.turns[j];
-      const share = j === batch.turns.length - 1 ? timing.endSec - cursor : (span * weights[j]) / totalWeight;
-      const endSec = j === batch.turns.length - 1 ? timing.endSec : cursor + share;
+      const startSec = timing.startSec + boundaryOffsets[j];
+      const endSec = j === batch.turns.length - 1 ? timing.endSec : timing.startSec + boundaryOffsets[j + 1];
       segments.push({
         turnId: item.turn.id,
         speaker: item.turn.speaker,
         voiceName: item.voiceName,
-        startSec: Number(cursor.toFixed(3)),
+        startSec: Number(startSec.toFixed(3)),
         endSec: Number(endSec.toFixed(3)),
       });
-      cursor = endSec;
     }
   }
 

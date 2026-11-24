@@ -5,7 +5,6 @@ import {
   extractGutenbergMetadata,
   filterChapters,
   intToRoman,
-  parseDomCasmurroGutenberg,
   parsePublicDomainBookText,
   romanToInt,
   slugifyBookId,
@@ -23,157 +22,164 @@ test('romanToInt and intToRoman roundtrip numerals I through CLX', () => {
   assert.equal(intToRoman(124), 'CXXIV');
 });
 
-test('parseDomCasmurroGutenberg extracts sequential chapters and excludes boilerplate and INDICE', () => {
+test('parsePublicDomainBookText extracts sequential stories and excludes Gutenberg boilerplate and INDICE', () => {
   const sample = `Header text
-*** START OF THE PROJECT GUTENBERG EBOOK DOM CASMURRO ***
+*** START OF THE PROJECT GUTENBERG EBOOK FABULAS DE ESOPO ***
 
 I
 
-Do titulo.
+A Cigarra e a Formiga.
 
-Uma noite destas, vindo da cidade
-para o Engenho Novo.
+Durante todo o verão, a cigarra cantou
+entre os galhos da floresta.
 
---Continue, disse eu.
---Já acabei, murmurou José Dias.
+--Por que trabalha tanto? perguntou a cigarra.
+--Guardo alimento para o inverno, respondeu a formiga.
 
 II.
 
-Do livro.
+A Lebre e a Tartaruga.
 
-Agora que expliquei o _titulo_, passo a escrever.
+Agora a corrida _começou_ pelo bosque.
 
 FIM
 
 INDICE
 
-    Capitulo I         Do titulo
-             II        Do livro
+    Fabula I         A Cigarra e a Formiga
+           II        A Lebre e a Tartaruga
 
-*** END OF THE PROJECT GUTENBERG EBOOK DOM CASMURRO ***
+*** END OF THE PROJECT GUTENBERG EBOOK FABULAS DE ESOPO ***
 `;
 
-  const parsed = parseDomCasmurroGutenberg(sample);
+  const parsed = parsePublicDomainBookText(sample);
   assert.equal(parsed.length, 2);
   assert.equal(parsed[0].number, 1);
   assert.equal(parsed[0].roman, 'I');
-  assert.equal(parsed[0].title, 'Do titulo');
+  assert.equal(parsed[0].title, 'A Cigarra e a Formiga');
   assert.equal(parsed[0].paragraphs.length, 3);
-  assert.equal(parsed[0].paragraphs[0], 'Uma noite destas, vindo da cidade para o Engenho Novo.');
-  assert.equal(parsed[0].paragraphs[1], '— Continue, disse eu.');
+  assert.equal(
+    parsed[0].paragraphs[0],
+    'Durante todo o verão, a cigarra cantou entre os galhos da floresta.',
+  );
+  assert.equal(parsed[0].paragraphs[1], '— Por que trabalha tanto? perguntou a cigarra.');
 
   assert.equal(parsed[1].number, 2);
-  assert.equal(parsed[1].title, 'Do livro');
+  assert.equal(parsed[1].title, 'A Lebre e a Tartaruga');
   assert.equal(parsed[1].paragraphs.length, 1);
-  assert.equal(parsed[1].paragraphs[0], 'Agora que expliquei o titulo, passo a escrever.');
+  assert.equal(parsed[1].paragraphs[0], 'Agora a corrida começou pelo bosque.');
 });
 
-test('parsePublicDomainBookText handles CAPITULO headings, OCR typo CAPIULO, front-matter TOC, and plain imports', () => {
-  const brasSample = `Title: Memorias Posthumas de Braz Cubas
-Author: Machado de Assis
+test('parsePublicDomainBookText handles FABULA/CONTO headings, front-matter TOC, and Markdown imports', () => {
+  const fablesSample = `Title: Fabulas de La Fontaine
+Author: Jean de La Fontaine
 Language: Portuguese
-*** START OF THE PROJECT GUTENBERG EBOOK MEMORIAS ***
+*** START OF THE PROJECT GUTENBERG EBOOK FABULAS ***
 
-CAPITULO I
-CAPITULO II
+FABULA I
+FABULA II
 
-CAPITULO I
+FABULA I
 
-Obito do autor
+O Lobo e o Cordeiro
 
-Algum tempo hesitei se devia abrir estas memorias pelo principio ou pelo fim.
+Um pequeno Cordeiro bebia água no riacho cristalino.
 
-CAPIULO II
+FABULA II
 
-O emplasto
+O Patinho Feio
 
-Com effeito, um dia de manhã, passeando na chacara, pendurou-se-me uma idéa no trapezio.
+Em uma manhã ensolarada, os ovos começaram a abrir.
 
---Que grande idéa! exclamou Virgilia.
+--Que grande patinho! disse a mãe pata.
 
 FIM
 
 ÍNDICE
-I Obito do autor
-*** END OF THE PROJECT GUTENBERG EBOOK MEMORIAS ***
+I O Lobo e o Cordeiro
+*** END OF THE PROJECT GUTENBERG EBOOK FABULAS ***
 `;
 
-  const meta = extractGutenbergMetadata(brasSample);
-  assert.equal(meta.title, 'Memorias Posthumas de Braz Cubas');
-  assert.equal(meta.author, 'Machado de Assis');
+  const meta = extractGutenbergMetadata(fablesSample);
+  assert.equal(meta.title, 'Fabulas de La Fontaine');
+  assert.equal(meta.author, 'Jean de La Fontaine');
 
-  const parsed = parsePublicDomainBookText(brasSample);
+  const parsed = parsePublicDomainBookText(fablesSample);
   assert.equal(parsed.length, 2);
-  assert.equal(parsed[0].title, 'Obito do autor');
-  assert.equal(parsed[1].title, 'O emplasto');
+  assert.equal(parsed[0].title, 'O Lobo e o Cordeiro');
+  assert.equal(parsed[1].title, 'O Patinho Feio');
 
-  const ch2 = buildChapterFromRaw(parsed[1], 'bras-cubas');
-  assert.equal(ch2.id, 'bc-cap-2');
-  assert.equal(ch2.turns[0].speaker, 'Brás Cubas (Narrador)');
-  assert.equal(ch2.turns[1].speaker, 'Virgília');
+  const ch2 = buildChapterFromRaw(parsed[1], 'fabulas-la-fontaine');
+  assert.equal(ch2.id, 'fabulas-la-fontaine-h-2');
+  assert.equal(ch2.numberLabel, 'História II');
+  assert.equal(ch2.turns[0].speaker, 'Contador de Histórias');
+  assert.equal(ch2.turns[1].speaker, 'Personagem');
 
-  const customMd = `# Prólogo\n\nEra uma tarde tranquila no Rio.\n\n# A Carta\n\n— Chegou o correio, disse a criada.`;
+  const customMd = `# A Cigarra e a Formiga\n\nEra uma tarde ensolarada no bosque.\n\n# O Leão e o Ratinho\n\n— Obrigado por me soltar, disse o leão.`;
   const parsedMd = parsePublicDomainBookText(customMd);
   assert.equal(parsedMd.length, 2);
-  assert.equal(parsedMd[0].title, 'Prólogo');
-  assert.equal(parsedMd[1].title, 'A Carta');
-  assert.equal(slugifyBookId('Memórias Póstumas!'), 'memorias-postumas');
+  assert.equal(parsedMd[0].title, 'A Cigarra e a Formiga');
+  assert.equal(parsedMd[1].title, 'O Leão e o Ratinho');
+  assert.equal(slugifyBookId('Fábulas da Floresta!'), 'fabulas-da-floresta');
 });
 
-test('buildChapterFromRaw detects recurring Dom Casmurro characters in dialogue turns', () => {
-  const chapter = buildChapterFromRaw({
-    number: 32,
-    roman: 'XXXII',
-    title: 'Olhos de ressaca',
-    wordCount: 42,
-    paragraphs: [
-      'Capitu olhou para mim longamente na sala.',
-      '— Que tens, Bentinho? perguntou Capitu.',
-      '— Nada, respondi eu com voz baixa.',
-    ],
-  });
+test('buildChapterFromRaw structures narrator and character dialogue turns cleanly', () => {
+  const chapter = buildChapterFromRaw(
+    {
+      number: 3,
+      roman: 'III',
+      title: 'O Leão e o Ratinho',
+      wordCount: 38,
+      paragraphs: [
+        'Um pequeno ratinho acordou o grande leão da floresta.',
+        '— Por favor, não me devore! pediu o ratinho.',
+        '— Pois bem, pode ir, respondeu o leão sorrindo.',
+      ],
+    },
+    'fabulas-esopo',
+  );
 
-  assert.equal(chapter.id, 'dc-cap-32');
+  assert.equal(chapter.id, 'fabulas-esopo-h-3');
   assert.equal(chapter.hasDialogue, true);
   assert.equal(chapter.turns.length, 3);
-  assert.equal(chapter.turns[0].speaker, 'Bentinho (Narrador)');
-  assert.equal(chapter.turns[1].speaker, 'Capitu');
-  assert.equal(chapter.turns[2].speaker, 'Bentinho (Narrador)');
-  assert.ok(chapter.characters.some((c) => c.name === 'Capitu' && c.defaultVoice === 'Zephyr'));
+  assert.equal(chapter.turns[0].speaker, 'Contador de Histórias');
+  assert.equal(chapter.turns[1].speaker, 'Personagem');
+  assert.equal(chapter.turns[2].speaker, 'Personagem');
+  assert.ok(chapter.characters.some((c) => c.name === 'Contador de Histórias' && c.defaultVoice === 'Charon'));
 });
 
 test('filterChapters matches by Arabic number, Roman numeral, accent-insensitive title, and cached filter', () => {
   const list: ChapterSummary[] = [
     {
-      id: 'dc-cap-1',
-      bookId: 'dom-casmurro',
+      id: 'esopo-cigarra-formiga',
+      bookId: 'fabulas-esopo',
       number: 1,
       roman: 'I',
-      numberLabel: 'Capítulo I',
-      title: 'Do Título',
-      estimatedMinutes: 3,
-      wordCount: 360,
+      numberLabel: 'Fábula I',
+      title: 'A Cigarra e a Formiga',
+      estimatedMinutes: 2,
+      wordCount: 220,
       characterCount: 3,
       hasDialogue: true,
     },
     {
-      id: 'dc-cap-32',
-      bookId: 'dom-casmurro',
-      number: 32,
-      roman: 'XXXII',
-      numberLabel: 'Capítulo XXXII',
-      title: 'Olhos de ressaca',
-      estimatedMinutes: 4,
-      wordCount: 520,
-      characterCount: 2,
+      id: 'esopo-leao-ratinho',
+      bookId: 'fabulas-esopo',
+      number: 3,
+      roman: 'III',
+      numberLabel: 'Fábula III',
+      title: 'O Leão e o Ratinho',
+      estimatedMinutes: 2,
+      wordCount: 250,
+      characterCount: 3,
       hasDialogue: true,
     },
   ];
-  const cached = new Set(['dc-cap-1']);
+  const cached = new Set(['esopo-cigarra-formiga']);
 
-  assert.equal(filterChapters(list, 'titulo', cached, false).length, 1);
-  assert.equal(filterChapters(list, '32', cached, false)[0]?.id, 'dc-cap-32');
-  assert.equal(filterChapters(list, 'xxxii', cached, false)[0]?.id, 'dc-cap-32');
+  assert.equal(filterChapters(list, 'cigarra', cached, false).length, 1);
+  assert.equal(filterChapters(list, '3', cached, false)[0]?.id, 'esopo-leao-ratinho');
+  assert.equal(filterChapters(list, 'iii', cached, false)[0]?.id, 'esopo-leao-ratinho');
   assert.equal(filterChapters(list, '', cached, true).length, 1);
-  assert.equal(filterChapters(list, 'ressaca', cached, true).length, 0);
+  assert.equal(filterChapters(list, 'ratinho', cached, true).length, 0);
 });

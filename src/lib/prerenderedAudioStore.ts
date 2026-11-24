@@ -10,20 +10,35 @@ import {
   serverTimestamp,
   setDoc,
   Timestamp,
-  updateDoc,
   where,
   type Unsubscribe,
 } from 'firebase/firestore';
-import type { AudioSegmentTiming, CachedAudioMetadata, PrebuiltVoiceName, ReadingMode } from '../types';
+import {
+  deleteObject,
+  getDownloadURL,
+  ref,
+  uploadBytesResumable,
+} from 'firebase/storage';
+import type {
+  AudioMimeType,
+  AudioSegmentTiming,
+  CachedAudioMetadata,
+  PrebuiltVoiceName,
+  ReadingMode,
+} from '../types';
 import {
   mergeFirestoreChunksToWav,
   sanitizePrerenderedAudioPayload,
-  splitWavIntoFirestoreChunks,
 } from './audioChunks';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  db,
+  handleFirestoreError,
+  OperationType,
+  storage,
+} from './firebase';
 
 const COLLECTION_NAME = 'prerenderedAudios';
-const BOOTSTRAPPED_ADMIN_EMAIL = 'diegolindolfo100@gmail.com';
 
 export function isFirestoreAudioUrl(audioUrl: string): boolean {
   return audioUrl.startsWith('firestore://');
@@ -38,7 +53,7 @@ export function canUserDeleteFirestoreRecord(
   user: User | null,
 ): boolean {
   if (!user || !user.emailVerified) return false;
-  if (user.email === BOOTSTRAPPED_ADMIN_EMAIL) return true;
+  if (user.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL) return true;
   return Boolean(record.createdByUid && record.createdByUid === user.uid);
 }
 
@@ -50,23 +65,58 @@ function timestampToIso(value: unknown): string {
   return new Date().toISOString();
 }
 
+function detectMimeType(audioBytes: Uint8Array, hint?: AudioMimeType): AudioMimeType {
+  if (
+    audioBytes.byteLength >= 12 &&
+    audioBytes[0] === 0x52 &&
+    audioBytes[1] === 0x49 &&
+    audioBytes[2] === 0x46 &&
+    audioBytes[3] === 0x46
+  ) {
+    return 'audio/wav';
+  }
+  return hint === 'audio/wav' ? 'audio/wav' : 'audio/mpeg';
+}
+
 function mapDocToMetadata(
   id: string,
   data: Record<string, unknown>,
 ): CachedAudioMetadata | null {
   if (data.status !== 'ready') return null;
 
-  const storageType = data.storageType === 'static' ? 'static' : 'chunks';
+  const storageType =
+    data.storageType === 'storage'
+      ? 'storage'
+      : data.storageType === 'static'
+        ? 'static'
+        : 'chunks';
   const staticAudioUrl =
     typeof data.staticAudioUrl === 'string' && data.staticAudioUrl.length > 0
       ? data.staticAudioUrl
       : undefined;
+  const downloadUrl =
+    typeof data.downloadUrl === 'string' && data.downloadUrl.startsWith('https://')
+      ? data.downloadUrl
+      : undefined;
+  const storagePath =
+    typeof data.storagePath === 'string' && data.storagePath.length > 0
+      ? data.storagePath
+      : undefined;
   const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 0;
+  const mimeType: AudioMimeType = data.mimeType === 'audio/wav' ? 'audio/wav' : 'audio/mpeg';
 
-  const audioUrl =
-    storageType === 'chunks' && chunkCount > 0
-      ? `firestore://${id}`
-      : staticAudioUrl || `/api/audio/${id}`;
+  let audioUrl = staticAudioUrl || `/api/audio/${id}`;
+  let storageSource: CachedAudioMetadata['storageSource'] = staticAudioUrl
+    ? 'static'
+    : 'local-server';
+
+  if (storageType === 'storage' && downloadUrl) {
+    audioUrl = downloadUrl;
+    storageSource = 'firebase-storage';
+  } else if (storageType === 'chunks' && chunkCount > 0) {
+    audioUrl = `firestore://${id}`;
+    storageSource = 'firestore';
+  }
 
   const segments = Array.isArray(data.segments)
     ? (data.segments as AudioSegmentTiming[])
@@ -82,10 +132,13 @@ function mapDocToMetadata(
     voiceMap: (data.voiceMap as Record<string, PrebuiltVoiceName>) ?? {},
     durationSec: typeof data.durationSec === 'number' ? data.durationSec : 0,
     fileSizeBytes: typeof data.fileSizeBytes === 'number' ? data.fileSizeBytes : 0,
+    mimeType,
     createdAt: timestampToIso(data.createdAt),
     segments,
     audioUrl,
-    storageSource: 'firestore',
+    storageSource,
+    storagePath,
+    downloadUrl,
     chunkCount,
     createdByUid: typeof data.createdByUid === 'string' ? data.createdByUid : undefined,
     createdByName: typeof data.createdByName === 'string' ? data.createdByName : undefined,
@@ -93,7 +146,7 @@ function mapDocToMetadata(
 }
 
 /**
- * Subscribes in real time to all public ready pre-rendered audios stored in Firestore.
+ * Subscribes in real time to all public ready pre-rendered audios cataloged in Firestore.
  */
 export function subscribeToPrerenderedAudios(
   onUpdate: (items: CachedAudioMetadata[]) => void,
@@ -126,15 +179,18 @@ export function subscribeToPrerenderedAudios(
 }
 
 /**
- * Loads all binary chunks for a pre-rendered audio from Firestore and reassembles them into a WAV Blob.
+ * Loads legacy binary chunks from Firestore and reassembles them into a WAV Blob.
  */
 export async function loadWavBlobFromFirestore(cacheKey: string): Promise<Blob> {
   const chunksPath = `${COLLECTION_NAME}/${cacheKey}/chunks`;
   try {
-    const q = query(collection(db, COLLECTION_NAME, cacheKey, 'chunks'), where('isPublic', '==', true));
+    const q = query(
+      collection(db, COLLECTION_NAME, cacheKey, 'chunks'),
+      where('isPublic', '==', true),
+    );
     const snapshot = await getDocs(q);
     if (snapshot.empty) {
-      throw new Error('Blocos de áudio WAV não encontrados no banco de dados.');
+      throw new Error('Blocos de áudio não encontrados no banco de dados.');
     }
 
     const rawChunks = snapshot.docs.map((docSnap) => {
@@ -162,47 +218,76 @@ export async function loadWavBlobFromFirestore(cacheKey: string): Promise<Blob> 
 }
 
 /**
- * Deletes a pre-rendered audio document and all of its binary chunks from Firestore.
+ * Deletes a pre-rendered audio catalog document and its Firebase Storage object (or legacy chunks).
  */
 export async function deletePrerenderedAudioFromFirestore(cacheKey: string): Promise<void> {
-  const chunksPath = `${COLLECTION_NAME}/${cacheKey}/chunks`;
+  const parentRef = doc(db, COLLECTION_NAME, cacheKey);
+  const docPath = `${COLLECTION_NAME}/${cacheKey}`;
+
+  let existingData: Record<string, unknown> | null = null;
   try {
-    const q = query(collection(db, COLLECTION_NAME, cacheKey, 'chunks'), where('isPublic', '==', true));
-    const chunkSnap = await getDocs(q);
-    await Promise.all(
-      chunkSnap.docs.map((chunkDoc) => deleteDoc(chunkDoc.ref)),
-    );
+    const parentSnap = await getDoc(parentRef);
+    if (parentSnap.exists()) {
+      existingData = parentSnap.data() as Record<string, unknown>;
+    }
   } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, chunksPath);
+    handleFirestoreError(error, OperationType.GET, docPath);
   }
 
-  const docPath = `${COLLECTION_NAME}/${cacheKey}`;
+  if (existingData && typeof existingData.storagePath === 'string' && existingData.storagePath) {
+    try {
+      await deleteObject(ref(storage, existingData.storagePath));
+    } catch (storageErr) {
+      const code = (storageErr as { code?: string })?.code ?? '';
+      if (!code.includes('object-not-found')) {
+        console.warn('Firebase Storage delete notice:', storageErr);
+      }
+    }
+  }
+
+  if (!existingData || existingData.storageType === 'chunks') {
+    const chunksPath = `${COLLECTION_NAME}/${cacheKey}/chunks`;
+    try {
+      const q = query(
+        collection(db, COLLECTION_NAME, cacheKey, 'chunks'),
+        where('isPublic', '==', true),
+      );
+      const chunkSnap = await getDocs(q);
+      if (!chunkSnap.empty) {
+        await Promise.all(chunkSnap.docs.map((chunkDoc) => deleteDoc(chunkDoc.ref)));
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, chunksPath);
+    }
+  }
+
   try {
-    await deleteDoc(doc(db, COLLECTION_NAME, cacheKey));
+    await deleteDoc(parentRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, docPath);
   }
 }
 
 /**
- * Persists a complete pre-rendered WAV recording (manifest + chunked binary WAV) into Firestore.
+ * Uploads a pre-rendered MP3/WAV audio binary to Firebase Storage and saves its catalog manifest in Firestore.
  */
 export async function savePrerenderedAudioToFirestore(params: {
   meta: CachedAudioMetadata;
   bookId: string;
   wavBytes: Uint8Array;
   user: User;
-  onProgress?: (completedChunks: number, totalChunks: number) => void;
+  onProgress?: (completedPercent: number, totalPercent: number) => void;
 }): Promise<CachedAudioMetadata> {
-  const { meta, bookId, wavBytes, user, onProgress } = params;
+  const { meta, bookId, wavBytes: audioBytes, user, onProgress } = params;
   if (!user.emailVerified) {
-    throw new Error('Sua conta Google precisa ter e-mail verificado para gravar no banco de dados.');
+    throw new Error('Sua conta Google precisa ter e-mail verificado para gravar na nuvem.');
   }
 
-  const chunks = splitWavIntoFirestoreChunks(wavBytes);
+  const mimeType = detectMimeType(audioBytes, meta.mimeType);
+  const ext = mimeType === 'audio/wav' ? 'wav' : 'mp3';
   const displayName = (user.displayName || 'Curador Voz & Folha').trim().slice(0, 120);
 
-  const sanitized = sanitizePrerenderedAudioPayload({
+  const preSanitized = sanitizePrerenderedAudioPayload({
     cacheKey: meta.cacheKey,
     chapterId: meta.chapterId,
     bookId,
@@ -211,31 +296,70 @@ export async function savePrerenderedAudioToFirestore(params: {
     mode: meta.mode,
     voiceMap: meta.voiceMap,
     durationSec: meta.durationSec,
-    fileSizeBytes: wavBytes.byteLength,
-    mimeType: 'audio/wav',
-    storageType: 'chunks',
-    chunkCount: chunks.length,
+    fileSizeBytes: audioBytes.byteLength,
+    mimeType,
+    storageType: 'storage',
+    chunkCount: 0,
     segments: meta.segments,
-    status: 'uploading',
+    status: 'ready',
     isPublic: true,
     createdByUid: user.uid,
     createdByName: displayName,
   });
 
+  const storagePath = `prerendered-audios/${preSanitized.cacheKey}.${ext}`;
+  const storageRef = ref(storage, storagePath);
+
+  onProgress?.(0, 100);
+  await new Promise<void>((resolve, reject) => {
+    const task = uploadBytesResumable(storageRef, audioBytes, {
+      contentType: mimeType,
+      cacheControl: 'public, max-age=31536000',
+      customMetadata: {
+        createdByUid: user.uid,
+        cacheKey: preSanitized.cacheKey,
+      },
+    });
+
+    task.on(
+      'state_changed',
+      (snap) => {
+        if (snap.totalBytes > 0) {
+          const pct = Math.min(99, Math.round((snap.bytesTransferred / snap.totalBytes) * 100));
+          onProgress?.(pct, 100);
+        }
+      },
+      (err) => reject(err),
+      () => {
+        onProgress?.(100, 100);
+        resolve();
+      },
+    );
+  });
+
+  const downloadUrl = await getDownloadURL(storageRef);
+
+  const sanitized = sanitizePrerenderedAudioPayload({
+    ...preSanitized,
+    storagePath,
+    downloadUrl,
+  });
+
   const parentRef = doc(db, COLLECTION_NAME, sanitized.cacheKey);
   const parentPath = `${COLLECTION_NAME}/${sanitized.cacheKey}`;
 
-  // If already exists, clean up existing doc & chunks before creating fresh copy
   try {
     const existingSnap = await getDoc(parentRef);
     if (existingSnap.exists()) {
-      await deletePrerenderedAudioFromFirestore(sanitized.cacheKey);
+      const oldData = existingSnap.data() as Record<string, unknown>;
+      if (oldData.storageType === 'chunks') {
+        await deletePrerenderedAudioFromFirestore(sanitized.cacheKey);
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, parentPath);
   }
 
-  // Step 1: Create parent metadata document with status: 'uploading'
   try {
     await setDoc(parentRef, {
       ...sanitized,
@@ -246,57 +370,23 @@ export async function savePrerenderedAudioToFirestore(params: {
     handleFirestoreError(error, OperationType.CREATE, parentPath);
   }
 
-  // Step 2: Write all binary WAV chunks sequentially/in small parallel batches
-  onProgress?.(0, chunks.length);
-  const concurrency = 3;
-  let completed = 0;
-
-  for (let i = 0; i < chunks.length; i += concurrency) {
-    const slice = chunks.slice(i, i + concurrency);
-    await Promise.all(
-      slice.map(async (chunk) => {
-        const chunkPath = `${COLLECTION_NAME}/${sanitized.cacheKey}/chunks/${chunk.chunkId}`;
-        try {
-          await setDoc(doc(db, COLLECTION_NAME, sanitized.cacheKey, 'chunks', chunk.chunkId), {
-            parentCacheKey: sanitized.cacheKey,
-            index: chunk.index,
-            dataBase64: chunk.dataBase64,
-            byteLength: chunk.byteLength,
-            isPublic: sanitized.isPublic,
-            createdByUid: user.uid,
-            createdAt: serverTimestamp(),
-          });
-          completed += 1;
-          onProgress?.(completed, chunks.length);
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, chunkPath);
-        }
-      }),
-    );
-  }
-
-  // Step 3: Atomically mark parent record as 'ready' (rules verify chunk-000 exists)
-  try {
-    await updateDoc(parentRef, {
-      status: 'ready',
-      updatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, parentPath);
-  }
-
   return {
     ...meta,
     cacheKey: sanitized.cacheKey,
     bookId: sanitized.bookId,
     fileSizeBytes: sanitized.fileSizeBytes,
     durationSec: sanitized.durationSec,
+    mimeType,
     segments: sanitized.segments,
-    audioUrl: `firestore://${sanitized.cacheKey}`,
-    storageSource: 'firestore',
-    chunkCount: chunks.length,
+    audioUrl: downloadUrl,
+    storageSource: 'firebase-storage',
+    storagePath,
+    downloadUrl,
+    chunkCount: 0,
     createdByUid: user.uid,
     createdByName: displayName,
     createdAt: new Date().toISOString(),
   };
 }
+
+export const savePrerenderedAudioToCloud = savePrerenderedAudioToFirestore;

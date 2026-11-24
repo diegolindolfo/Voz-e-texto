@@ -1,3 +1,5 @@
+import { auth } from './firebase';
+
 /**
  * Safely parses a fetch Response as JSON without throwing raw SyntaxError ("Unexpected token 'A'...")
  * when a serverless gateway (e.g. Vercel 500/502/504) returns a plain-text or HTML error page.
@@ -24,4 +26,27 @@ export async function safeParseJson<T = Record<string, unknown>>(
     }
     throw new Error(fallbackErrorMessage);
   }
+}
+
+/**
+ * Performs a fetch request attaching the signed-in Firebase ID token as a Bearer token
+ * whenever a user session is active.
+ */
+export async function authFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
+      const token = await currentUser.getIdToken();
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+    } catch {
+      // Proceed without token; protected endpoints will return a clear 401 message
+    }
+  }
+  return fetch(input, { ...init, headers });
 }

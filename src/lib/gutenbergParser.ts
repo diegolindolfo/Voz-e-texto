@@ -1,8 +1,8 @@
-import type { Chapter, ChapterCharacter, ChapterSummary, PrebuiltVoiceName, ScriptTurn } from '../types';
+import type { Chapter, ChapterCharacter, ChapterSummary, ScriptTurn } from '../types';
 
 const ROMAN_RE = /^(M{0,3})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})\.?$/;
-const CAP_ROMAN_RE = /^(?:CAP[IÍ]T?ULO|CAP\.?|PARTE)\s+([IVXLCDM]+)(?:\s*[-—–:.]\s*(.+))?\.?$/i;
-const CAP_ARABIC_RE = /^(?:CAP[IÍ]T?ULO|CAP\.?|PARTE)\s+(\d{1,3})(?:\s*[-—–:.]\s*(.+))?\.?$/i;
+const CAP_ROMAN_RE = /^(?:CAP[IÍ]T?ULO|CAP\.?|PARTE|F[ÁA]BULA|CONTO|HIST[ÓO]RIA)\s+([IVXLCDM]+)(?:\s*[-—–:.]\s*(.+))?\.?$/i;
+const CAP_ARABIC_RE = /^(?:CAP[IÍ]T?ULO|CAP\.?|PARTE|F[ÁA]BULA|CONTO|HIST[ÓO]RIA)\s+(\d{1,3})(?:\s*[-—–:.]\s*(.+))?\.?$/i;
 const MARKDOWN_HEADING_RE = /^#{1,3}\s+(.+)$/;
 
 export interface ParsedRawChapter {
@@ -393,14 +393,13 @@ export function parsePublicDomainBookText(rawText: string): ParsedRawChapter[] {
         title = cleanChapterTitle(firstBlock.join(' '));
         bodyStartLine = blockEnd;
       } else {
-        title = `Capítulo ${current.roman}`;
+        title = `História ${current.roman}`;
       }
     }
 
     const contentLines = bookLines.slice(bodyStartLine, nextHeadingLine);
     let paragraphs = parseParagraphsFromLines(contentLines);
 
-    // Handle famous experimental punctuation-only chapters (e.g. Brás Cubas CXXXIX)
     if (paragraphs.length === 0) {
       paragraphs = ['...'];
     }
@@ -413,7 +412,7 @@ export function parsePublicDomainBookText(rawText: string): ParsedRawChapter[] {
     chapters.push({
       number: current.number,
       roman: current.roman,
-      title: title || `Capítulo ${current.roman}`,
+      title: title || `História ${current.roman}`,
       paragraphs,
       wordCount,
     });
@@ -422,228 +421,38 @@ export function parsePublicDomainBookText(rawText: string): ParsedRawChapter[] {
   return chapters;
 }
 
-/**
- * Backward-compatible alias used by Dom Casmurro tests and tooling.
- */
-export function parseDomCasmurroGutenberg(rawText: string): ParsedRawChapter[] {
-  return parsePublicDomainBookText(rawText);
-}
-
-interface KnownPersona {
-  name: string;
-  patterns: RegExp[];
-  voice: PrebuiltVoiceName;
-  description: string;
-  style: string;
-}
-
 interface BookPersonaProfile {
   chapterIdPrefix: string;
   narrator: ChapterCharacter;
-  personas: KnownPersona[];
   fallbackSummaryBookTitle: string;
 }
-
-const DOM_CASMURRO_PERSONAS: KnownPersona[] = [
-  {
-    name: 'Capitu',
-    patterns: [/\bcapit[uú]\b/i],
-    voice: 'Zephyr',
-    description: 'Vizinha e grande amor de Bentinho, perspicaz e expressiva.',
-    style: 'Voz feminina jovem e vivaz em português brasileiro, olhar atento e firmeza serena',
-  },
-  {
-    name: 'José Dias',
-    patterns: [/\bjos[ée]\s+dias\b/i, /\baggregado\b/i, /\bagregado\b/i],
-    voice: 'Fenrir',
-    description: 'Agregado da família, solene, diplomático e amante de superlativos.',
-    style: 'Homem brasileiro formal e solene, voz grave e enfática com pausas teatrais',
-  },
-  {
-    name: 'Dona Glória',
-    patterns: [/\bd\.\s*gl[óo]ria\b/i, /\bdona\s+gl[óo]ria\b/i, /\bmamãe\b/i, /\bminha\s+mãe\b/i],
-    voice: 'Kore',
-    description: 'Mãe de Bentinho, piedosa, carinhosa e fiel à promessa do seminário.',
-    style: 'Senhora brasileira terna e serena, voz acolhedora e delicada',
-  },
-  {
-    name: 'Escobar',
-    patterns: [/\bescobar\b/i, /\bezequiel\s+de\s+sousa\b/i],
-    voice: 'Puck',
-    description: 'Amigo íntimo do seminário, articulado, inteligente e cortês.',
-    style: 'Homem brasileiro jovem e articulado, tom cordial e persuasivo',
-  },
-  {
-    name: 'Tio Cosme',
-    patterns: [/\btio\s+cosme\b/i, /\bcosme\b/i],
-    voice: 'Fenrir',
-    description: 'Tio advogado, bonachão, irônico e bem-humorado.',
-    style: 'Voz masculina madura e bem-humorada, tom descontraído e sonoro',
-  },
-  {
-    name: 'Prima Justina',
-    patterns: [/\bprima\s+justina\b/i, /\bjustina\b/i],
-    voice: 'Kore',
-    description: 'Parenta franca, observadora e de comentários secos.',
-    style: 'Voz feminina madura, franca e levemente seca',
-  },
-  {
-    name: 'Pádua',
-    patterns: [/\bp[áa]dua\b/i, /\btartaruga\b/i],
-    voice: 'Fenrir',
-    description: 'Pai de Capitu, emotivo, modesto e falante.',
-    style: 'Voz masculina calorosa e expansiva, tom humilde e emotivo',
-  },
-  {
-    name: 'Sancha',
-    patterns: [/\bsancha\b/i],
-    voice: 'Kore',
-    description: 'Amiga de Capitu e esposa de Escobar, gentil e reservada.',
-    style: 'Voz feminina suave, educada e serena',
-  },
-  {
-    name: 'Ezequiel',
-    patterns: [/\bezequiel\b/i],
-    voice: 'Puck',
-    description: 'Filho de Bento e Capitu, curioso e enérgico.',
-    style: 'Voz jovem, curiosa e espontânea',
-  },
-];
-
-const BRAS_CUBAS_PERSONAS: KnownPersona[] = [
-  {
-    name: 'Virgília',
-    patterns: [/\bvirg[íi]lia\b/i],
-    voice: 'Zephyr',
-    description: 'Grande paixão de Brás Cubas, elegante, apaixonada e ambiciosa.',
-    style: 'Voz feminina brasileira elegante, envolvente e levemente maliciosa',
-  },
-  {
-    name: 'Quincas Borba',
-    patterns: [/\bquincas\s+borba\b/i, /\bhumanitismo\b/i],
-    voice: 'Fenrir',
-    description: 'Filósofo excêntrico e criador do Humanitismo, enfático e grandiloquente.',
-    style: 'Homem brasileiro teatral e filosófico, voz grave, vibrante e expansiva',
-  },
-  {
-    name: 'Marcela',
-    patterns: [/\bmarcel+a\b/i],
-    voice: 'Kore',
-    description: 'Cortesã espanhola da juventude de Brás Cubas, sedutora e prática.',
-    style: 'Voz feminina calorosa, sedutora e segura',
-  },
-  {
-    name: 'Lobo Neves',
-    patterns: [/\blobo\s+neves\b/i],
-    voice: 'Fenrir',
-    description: 'Marido de Virgília e político ambicioso, grave e supersticioso.',
-    style: 'Homem brasileiro formal e político, voz firme e comedida',
-  },
-  {
-    name: 'Dona Plácida',
-    patterns: [/\bd\.\s*pl[áa]cida\b/i, /\bdona\s+pl[áa]cida\b/i, /\bpl[áa]cida\b/i],
-    voice: 'Kore',
-    description: 'Confidente humilde e dedicada da casinha da Gamboa.',
-    style: 'Senhora brasileira humilde, voz mansa, respeitosa e melancólica',
-  },
-  {
-    name: 'Eugênia',
-    patterns: [/\beug[êe]nia\b/i],
-    voice: 'Zephyr',
-    description: 'A flor da moita na Tijuca, franca, altiva e melancólica.',
-    style: 'Jovem brasileira sincera e serena, voz límpida e firme',
-  },
-  {
-    name: 'Cotrim',
-    patterns: [/\bcotrim\b/i],
-    voice: 'Fenrir',
-    description: 'Cunhado de Brás Cubas, seco, metódico e calculista.',
-    style: 'Homem brasileiro seco e pragmático, voz direta e contida',
-  },
-  {
-    name: 'Sabina',
-    patterns: [/\bsabina\b/i],
-    voice: 'Kore',
-    description: 'Irmã de Brás Cubas, afetuosa, falante e casamenteira.',
-    style: 'Voz feminina expressiva, viva e familiar',
-  },
-  {
-    name: 'Prudêncio',
-    patterns: [/\bprud[êe]ncio\b/i],
-    voice: 'Puck',
-    description: 'Ex-escravizado da casa dos Cubas.',
-    style: 'Voz masculina direta e expressiva em português brasileiro',
-  },
-];
 
 function getBookPersonaProfile(
   bookId: string,
   options?: { bookTitle?: string; narratorName?: string },
 ): BookPersonaProfile {
-  if (bookId === 'dom-casmurro') {
-    return {
-      chapterIdPrefix: 'dc-cap',
-      narrator: {
-        name: 'Bentinho (Narrador)',
-        role: 'narrator',
-        description: 'Voz madura, irônica e contemplativa de Bento Santiago.',
-        defaultVoice: 'Charon',
-        defaultStyle:
-          'Narrador brasileiro culto e maduro, tom intimista, cadência calma e ironia sutil de Machado de Assis',
-      },
-      personas: DOM_CASMURRO_PERSONAS,
-      fallbackSummaryBookTitle: 'Dom Casmurro',
-    };
-  }
-
-  if (bookId === 'bras-cubas') {
-    return {
-      chapterIdPrefix: 'bc-cap',
-      narrator: {
-        name: 'Brás Cubas (Narrador)',
-        role: 'narrator',
-        description: 'Defunto autor, espirituoso, mordaz e elegante.',
-        defaultVoice: 'Charon',
-        defaultStyle:
-          'Narrador brasileiro espirituoso, irônico e mordaz, conversando diretamente com o leitor com fluência elegante',
-      },
-      personas: BRAS_CUBAS_PERSONAS,
-      fallbackSummaryBookTitle: 'Memórias Póstumas de Brás Cubas',
-    };
-  }
-
-  const cleanPrefix = bookId.replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'livro';
+  const cleanPrefix = bookId.replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'fabula';
   return {
-    chapterIdPrefix: `${cleanPrefix}-cap`,
+    chapterIdPrefix: `${cleanPrefix}-h`,
     narrator: {
-      name: options?.narratorName?.trim() || 'Narrador',
+      name: options?.narratorName?.trim() || 'Contador de Histórias',
       role: 'narrator',
-      description: 'Voz principal da narrativa literária em português brasileiro.',
+      description: 'Voz principal da narrativa em português brasileiro.',
       defaultVoice: 'Charon',
       defaultStyle:
-        'Narrador literário brasileiro, voz natural, cadência envolvente e dicção clara',
+        'Contador de histórias brasileiro, voz calorosa, cadência envolvente e dicção clara',
     },
-    personas: [],
-    fallbackSummaryBookTitle: options?.bookTitle || 'esta obra',
+    fallbackSummaryBookTitle: options?.bookTitle || 'esta coleção',
   };
 }
 
-function detectPersonaInText(text: string, personas: KnownPersona[]): KnownPersona | null {
-  for (const persona of personas) {
-    if (persona.patterns.some((re) => re.test(text))) {
-      return persona;
-    }
-  }
-  return null;
-}
-
 /**
- * Converts a parsed raw chapter into a structured Chapter ready for instant reading
- * and immediate multi-voice synthesis, inferring likely dialogue speakers from context.
+ * Converts a parsed raw story/chapter into a structured Chapter ready for instant reading
+ * and immediate multi-voice synthesis.
  */
 export function buildChapterFromRaw(
   raw: ParsedRawChapter,
-  bookId = 'dom-casmurro',
+  bookId = 'fabulas-personalizadas',
   options?: { bookTitle?: string; narratorName?: string },
 ): Chapter {
   const profile = getBookPersonaProfile(bookId, options);
@@ -654,21 +463,13 @@ export function buildChapterFromRaw(
   characterMap.set(narratorCharacter.name, narratorCharacter);
 
   const turns: ScriptTurn[] = [];
-  let lastCharacterPersona: KnownPersona | null = null;
   let hasDialogue = false;
-
-  const chapterText = raw.paragraphs.join(' ');
-  const chapterLeadPersona = detectPersonaInText(chapterText, profile.personas);
 
   for (let i = 0; i < raw.paragraphs.length; i++) {
     const paragraph = raw.paragraphs[i];
     const isDialogue = paragraph.startsWith('—');
 
     if (!isDialogue) {
-      const mentioned = detectPersonaInText(paragraph, profile.personas);
-      if (mentioned) {
-        lastCharacterPersona = mentioned;
-      }
       turns.push({
         id: `${chapterId}-t${i + 1}`,
         speaker: narratorCharacter.name,
@@ -682,70 +483,30 @@ export function buildChapterFromRaw(
 
     hasDialogue = true;
     const spokenText = paragraph.replace(/^—\s*/, '').trim();
-    const isFirstPersonReply = /\b(disse\s+eu|respondi|perguntei|retorqui|acudi|repliquei|murmurei)\b/i.test(
-      spokenText,
-    );
-
-    if (isFirstPersonReply) {
-      turns.push({
-        id: `${chapterId}-t${i + 1}`,
-        speaker: narratorCharacter.name,
-        role: 'narrator',
-        style: `${narratorCharacter.name} em diálogo direto, tom vivo e expressivo em português brasileiro`,
-        text: spokenText,
-        pauseAfterMs: 240,
-      });
-      continue;
-    }
-
-    const explicit = detectPersonaInText(spokenText, profile.personas);
-    const chosen: KnownPersona | null = explicit ?? lastCharacterPersona ?? chapterLeadPersona;
-
-    if (chosen) {
-      lastCharacterPersona = chosen;
-      if (!characterMap.has(chosen.name)) {
-        characterMap.set(chosen.name, {
-          name: chosen.name,
-          role: 'character',
-          description: chosen.description,
-          defaultVoice: chosen.voice,
-          defaultStyle: chosen.style,
-        });
-      }
-      turns.push({
-        id: `${chapterId}-t${i + 1}`,
-        speaker: chosen.name,
+    const fallbackName = 'Personagem';
+    if (!characterMap.has(fallbackName)) {
+      characterMap.set(fallbackName, {
+        name: fallbackName,
         role: 'character',
-        style: chosen.style,
-        text: spokenText,
-        pauseAfterMs: 240,
-      });
-    } else {
-      const fallbackName = 'Interlocutor';
-      if (!characterMap.has(fallbackName)) {
-        characterMap.set(fallbackName, {
-          name: fallbackName,
-          role: 'character',
-          description: 'Voz de personagem em diálogo neste capítulo.',
-          defaultVoice: 'Puck',
-          defaultStyle: 'Personagem brasileiro em diálogo natural e expressivo',
-        });
-      }
-      turns.push({
-        id: `${chapterId}-t${i + 1}`,
-        speaker: fallbackName,
-        role: 'character',
-        style: 'Personagem brasileiro em diálogo natural e expressivo',
-        text: spokenText,
-        pauseAfterMs: 240,
+        description: 'Voz de personagem em diálogo nesta história.',
+        defaultVoice: 'Puck',
+        defaultStyle: 'Personagem brasileiro em diálogo natural e expressivo',
       });
     }
+    turns.push({
+      id: `${chapterId}-t${i + 1}`,
+      speaker: fallbackName,
+      role: 'character',
+      style: 'Personagem brasileiro em diálogo natural e expressivo',
+      text: spokenText,
+      pauseAfterMs: 240,
+    });
   }
 
   const firstReadable = raw.paragraphs.find((p) => /[a-zA-ZÀ-ÿ]{3,}/.test(p)) ?? '';
   const firstSentence =
     firstReadable.split(/(?<=[.!?])\s+/)[0]?.slice(0, 165).trim() ||
-    `Capítulo ${raw.roman} de ${profile.fallbackSummaryBookTitle}.`;
+    `História ${raw.roman} de ${profile.fallbackSummaryBookTitle}.`;
   const summary =
     firstSentence.length >= 165 ? `${firstSentence.replace(/[,\s]+$/, '')}…` : firstSentence;
 
@@ -756,7 +517,7 @@ export function buildChapterFromRaw(
     bookId,
     number: raw.number,
     roman: raw.roman,
-    numberLabel: `Capítulo ${raw.roman}`,
+    numberLabel: `História ${raw.roman}`,
     title: raw.title,
     estimatedMinutes: Math.max(1, Math.round(raw.wordCount / 140)),
     wordCount: raw.wordCount,

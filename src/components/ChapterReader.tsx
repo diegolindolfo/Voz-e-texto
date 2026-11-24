@@ -17,6 +17,7 @@ interface ChapterReaderProps {
   chapterSummary?: ChapterSummary;
   chapterPosition: number;
   totalChapters: number;
+  isCuratorMode?: boolean;
   isLoadingChapter?: boolean;
   isDramatizing?: boolean;
   onDramatizeChapter?: () => void;
@@ -29,7 +30,7 @@ interface ChapterReaderProps {
   isPlaying: boolean;
   isLocalSpeechActive?: boolean;
   isCached: boolean;
-  cachedStorageSource?: 'firestore' | 'static' | 'local-server';
+  cachedStorageSource?: 'firebase-storage' | 'firestore' | 'static' | 'local-server';
   cachedSizeBytes?: number;
   cachedDurationSec?: number;
   segments: AudioSegmentTiming[];
@@ -47,6 +48,7 @@ export function ChapterReader({
   chapterSummary,
   chapterPosition,
   totalChapters,
+  isCuratorMode = false,
   isLoadingChapter = false,
   isDramatizing = false,
   onDramatizeChapter,
@@ -108,7 +110,7 @@ export function ChapterReader({
       : undefined);
 
   const canRefineWithAi = Boolean(
-    chapter && !isLoadingChapter && !chapter.dramatizedByAi && onDramatizeChapter,
+    isCuratorMode && chapter && !isLoadingChapter && !chapter.dramatizedByAi && onDramatizeChapter,
   );
 
   return (
@@ -158,12 +160,22 @@ export function ChapterReader({
           className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#5A6474] dark:text-[#9AA4B2]"
           data-testid="chapter-metadata"
         >
-          <span className="text-[#1E3A5F] dark:text-[#7FA6D6] font-medium">
-            {chapter?.dramatizedByAi ? 'Pré-ajustado por IA' : 'Texto integral'}
-          </span>
-          <span aria-hidden="true">·</span>
+          {isCuratorMode && (
+            <>
+              <span className="text-[#1E3A5F] dark:text-[#7FA6D6] font-medium">
+                {chapter?.dramatizedByAi ? 'Pré-ajustado por IA' : 'Texto integral'}
+              </span>
+              <span aria-hidden="true">·</span>
+            </>
+          )}
           <span>
-            {uniqueVoiceCount === 1 ? '1 voz natural' : `${uniqueVoiceCount} vozes naturais`}
+            {uniqueVoiceCount === 1
+              ? isCuratorMode
+                ? '1 voz natural'
+                : '1 voz'
+              : isCuratorMode
+                ? `${uniqueVoiceCount} vozes naturais`
+                : `${uniqueVoiceCount} vozes`}
           </span>
           <span aria-hidden="true">·</span>
           <span className="font-mono-tabular">
@@ -179,19 +191,29 @@ export function ChapterReader({
                 : 'text-[#5A6474] dark:text-[#9AA4B2]'
             }
           >
-            {isCached
-              ? `${cachedStorageSource === 'firestore' ? 'Salvo no banco Firestore' : 'Pré-renderizado em WAV'}${cachedSizeBytes ? ` (${formatBytes(cachedSizeBytes)})` : ''}`
-              : 'Pronto para pré-renderizar WAV'}
+            {isCuratorMode
+              ? isCached
+                ? `${
+                    cachedStorageSource === 'firebase-storage'
+                      ? 'Salvo no Firebase Storage'
+                      : cachedStorageSource === 'firestore'
+                        ? 'Salvo no banco Firestore'
+                        : 'Pré-renderizado em MP3'
+                  }${cachedSizeBytes ? ` (${formatBytes(cachedSizeBytes)})` : ''}`
+                : 'Pronto para pré-renderizar MP3'
+              : isCached
+                ? 'Áudio pronto'
+                : 'Leitura no dispositivo'}
           </span>
         </div>
 
-        {aiNotes && (
+        {isCuratorMode && aiNotes && (
           <p className="mt-2 text-xs text-[#5A6474] dark:text-[#9AA4B2]">
             {aiNotes}
           </p>
         )}
 
-        {/* Mode selector, voice cast trigger & collection pre-render action */}
+        {/* Mode selector, voice cast trigger & curator collection pre-render action */}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-2.5">
           <div
             role="group"
@@ -246,14 +268,14 @@ export function ChapterReader({
               </button>
             )}
 
-            {remainingUncachedCount > 0 && onPrerenderCollection && (
+            {isCuratorMode && remainingUncachedCount > 0 && onPrerenderCollection && (
               <button
                 type="button"
                 onClick={onPrerenderCollection}
                 className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-neutral-300/90 dark:border-neutral-700 text-xs font-medium text-[#14171F] dark:text-[#EAECEF] hover:bg-neutral-100 dark:hover:bg-neutral-800/80 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Layers className="w-3.5 h-3.5 text-[#1E3A5F] dark:text-[#7FA6D6]" aria-hidden="true" />
-                <span>Pré-renderizar lote WAV</span>
+                <span>Pré-renderizar lote MP3</span>
               </button>
             )}
 
@@ -263,7 +285,7 @@ export function ChapterReader({
               disabled={!chapter || isLoadingChapter}
               className="min-h-[40px] px-3 py-2 text-xs font-medium text-[#1E3A5F] dark:text-[#7FA6D6] hover:underline underline-offset-4 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45"
             >
-              Elenco e banco ({characterCount})
+              {isCuratorMode ? `Elenco e banco (${characterCount})` : `Vozes (${characterCount})`}
             </button>
           </div>
         </div>

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWavFromPcm, concatWavClips, createSilencePcm, parseWavBuffer } from './wav';
+import {
+  buildWavFromPcm,
+  concatWavClips,
+  createSilencePcm,
+  findSilenceMidpoints,
+  parseWavBuffer,
+} from './wav';
 
 test('buildWavFromPcm and parseWavBuffer roundtrip standard 24kHz mono PCM', () => {
   const samplePcm = new Uint8Array(4800); // 0.1s at 24kHz * 2 bytes
@@ -54,4 +60,30 @@ test('concatWavClips merges clips with natural pause gaps and exact segment timi
 
   const reparsed = parseWavBuffer(result.wavBuffer);
   assert.equal(Number(reparsed.durationSec.toFixed(3)), 1.75);
+});
+
+test('findSilenceMidpoints locates real inter-turn pause midpoints in 16-bit PCM audio', () => {
+  const sampleRate = 24000;
+  const makeTonePcm = (durationMs: number): Uint8Array => {
+    const frames = Math.round((sampleRate * durationMs) / 1000);
+    const pcm = new Uint8Array(frames * 2);
+    const view = new DataView(pcm.buffer);
+    for (let i = 0; i < frames; i++) {
+      const val = Math.round(Math.sin((2 * Math.PI * 330 * i) / sampleRate) * 14000);
+      view.setInt16(i * 2, val, true);
+    }
+    return pcm;
+  };
+
+  // 1.0s tone + 0.4s silence + 1.0s tone -> pause midpoint at 1.2s
+  const wav = concatWavClips([
+    { id: 'a', wavBuffer: buildWavFromPcm(makeTonePcm(1000), sampleRate, 1, 16), pauseAfterMs: 400 },
+    { id: 'b', wavBuffer: buildWavFromPcm(makeTonePcm(1000), sampleRate, 1, 16), pauseAfterMs: 0 },
+  ]).wavBuffer;
+
+  const parsed = parseWavBuffer(wav);
+  const silences = findSilenceMidpoints(parsed);
+  assert.equal(silences.length, 1);
+  assert.ok(Math.abs(silences[0].timeSec - 1.2) <= 0.05, `Expected ~1.2s, got ${silences[0].timeSec}`);
+  assert.ok(silences[0].durationMs >= 320);
 });

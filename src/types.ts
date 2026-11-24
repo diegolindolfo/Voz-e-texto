@@ -74,7 +74,7 @@ export interface Book {
 }
 
 export interface PublicDomainCatalogEntry {
-  gutenbergId: number;
+  gutenbergId?: number;
   slug: string;
   title: string;
   author: string;
@@ -86,6 +86,7 @@ export interface PublicDomainCatalogEntry {
 }
 
 export type ReadingMode = 'dramatized' | 'narrator';
+export type AudioMimeType = 'audio/mpeg' | 'audio/wav';
 
 export interface AudioSegmentTiming {
   turnId: string;
@@ -105,10 +106,13 @@ export interface CachedAudioMetadata {
   voiceMap: Record<string, PrebuiltVoiceName>;
   durationSec: number;
   fileSizeBytes: number;
+  mimeType?: AudioMimeType;
   createdAt: string;
   segments: AudioSegmentTiming[];
   audioUrl: string;
-  storageSource?: 'firestore' | 'static' | 'local-server';
+  storageSource?: 'firebase-storage' | 'firestore' | 'static' | 'local-server';
+  storagePath?: string;
+  downloadUrl?: string;
   chunkCount?: number;
   createdByUid?: string;
   createdByName?: string;

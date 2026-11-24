@@ -1,12 +1,14 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
+  AudioMimeType,
   AudioSegmentTiming,
   ChapterCharacter,
   PrebuiltVoiceName,
   ReadingMode,
   ScriptTurn,
 } from '../src/types';
-import { concatWavClips } from '../src/lib/wav';
+import { convertWavBufferToMp3 } from '../src/lib/mp3';
+import { concatWavClips, findSilenceMidpoints, parseWavBuffer } from '../src/lib/wav';
 import {
   AdaptivePacer,
   computeBackoffDelayMs,
@@ -335,7 +337,8 @@ export async function synthesizeChapterAudio(params: {
   minSpacingMs?: number;
   onProgress?: (progress: SynthesisProgressUpdate) => void;
 }): Promise<{
-  wavBuffer: Uint8Array;
+  audioBuffer: Uint8Array;
+  mimeType: AudioMimeType;
   durationSec: number;
   segments: AudioSegmentTiming[];
   reusedBatches: number;
@@ -431,14 +434,23 @@ export async function synthesizeChapterAudio(params: {
   }
 
   const merged = concatWavClips(clipInputs);
-  const segments = expandBatchTimingsToTurns(batches, merged.timings);
+  const batchSilences = clipInputs.map((clip) => {
+    try {
+      return findSilenceMidpoints(parseWavBuffer(clip.wavBuffer));
+    } catch {
+      return [];
+    }
+  });
+  const { mp3Buffer } = convertWavBufferToMp3(merged.wavBuffer, 64);
+  const segments = expandBatchTimingsToTurns(batches, merged.timings, batchSilences);
 
   if (cacheKey) {
     clearPartialBatchCache(cacheKey);
   }
 
   return {
-    wavBuffer: merged.wavBuffer,
+    audioBuffer: mp3Buffer,
+    mimeType: 'audio/mpeg',
     durationSec: merged.durationSec,
     segments,
     reusedBatches,

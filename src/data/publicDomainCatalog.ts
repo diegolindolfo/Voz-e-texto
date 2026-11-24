@@ -10,7 +10,6 @@ export interface CuratedPublicDomainEntry extends PublicDomainCatalogEntry {
  */
 export const PUBLIC_DOMAIN_CATALOG: CuratedPublicDomainEntry[] = [
   {
-    gutenbergId: 10001,
     slug: 'fabulas-esopo',
     title: 'Fábulas de Esopo',
     author: 'Esopo',
@@ -20,7 +19,6 @@ export const PUBLIC_DOMAIN_CATALOG: CuratedPublicDomainEntry[] = [
     narratorName: 'Contador de Histórias',
   },
   {
-    gutenbergId: 10002,
     slug: 'contos-grimm-perrault',
     title: 'Contos Clássicos da Floresta',
     author: 'Irmãos Grimm & Charles Perrault',
@@ -30,7 +28,6 @@ export const PUBLIC_DOMAIN_CATALOG: CuratedPublicDomainEntry[] = [
     narratorName: 'Contador de Histórias',
   },
   {
-    gutenbergId: 10003,
     slug: 'contos-andersen',
     title: 'Contos de Hans Christian Andersen',
     author: 'Hans Christian Andersen',
@@ -40,7 +37,6 @@ export const PUBLIC_DOMAIN_CATALOG: CuratedPublicDomainEntry[] = [
     narratorName: 'Contador de Histórias',
   },
   {
-    gutenbergId: 10004,
     slug: 'fabulas-la-fontaine',
     title: 'Fábulas de La Fontaine',
     author: 'Jean de La Fontaine',
@@ -185,7 +181,6 @@ export const PUBLIC_DOMAIN_CATALOG: CuratedPublicDomainEntry[] = [
     ],
   },
   {
-    gutenbergId: 10005,
     slug: 'contos-carochinha',
     title: 'Contos Populares da Carochinha',
     author: 'Tradição Oral Luso-Brasileira',

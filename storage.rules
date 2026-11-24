@@ -1,0 +1,30 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Pre-rendered public-domain fables & children's tales audio (.mp3 / .wav)
+    match /prerendered-audios/{fileName} {
+      allow read: if true;
+
+      allow create, update: if request.auth != null
+        && request.auth.token.email_verified == true
+        && fileName.matches('^[a-zA-Z0-9_\\-]+\\.(mp3|wav)$')
+        && request.resource.size > 0
+        && request.resource.size <= 15 * 1024 * 1024
+        && request.resource.contentType.matches('^audio/(mpeg|mp3|wav)$')
+        && request.resource.metadata.createdByUid == request.auth.uid;
+
+      allow delete: if request.auth != null
+        && request.auth.token.email_verified == true
+        && (
+          resource.metadata.createdByUid == request.auth.uid
+          || request.auth.token.email == 'diegolindolfo100@gmail.com'
+        );
+    }
+  }
+}
