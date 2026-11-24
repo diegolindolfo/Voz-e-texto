@@ -1593,7 +1593,9 @@ export default function App() {
 
   const activeSpeakerLabel =
     activeTurnIndex >= 0 && activeSegments[activeTurnIndex]
-      ? `${activeSegments[activeTurnIndex].speaker} · ${activeSegments[activeTurnIndex].voiceName}`
+      ? isCuratorMode
+        ? `${activeSegments[activeTurnIndex].speaker} · ${activeSegments[activeTurnIndex].voiceName}`
+        : activeSegments[activeTurnIndex].speaker
       : undefined;
 
   const synthesisProgressLabel = useMemo(() => {
@@ -1626,9 +1628,9 @@ export default function App() {
       {/* Hidden native audio element */}
       <audio ref={audioRef} preload="metadata" className="sr-only" />
 
-      {/* Non-sticky minimalist top bar (strictly follows 3-zone Top Bar Contract) */}
+      {/* Non-sticky minimalist top bar */}
       <header className="relative border-b border-neutral-200/80 dark:border-neutral-800 bg-[#F7F7F5] dark:bg-[#101216]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between gap-6">
           {/* Zone 1: Clean single-line wordmark */}
           <a
             href="#leitura"
@@ -1637,97 +1639,79 @@ export default function App() {
             Voz &amp; Folha
           </a>
 
-          {/* Zone 2: Desktop concise single-line nav links */}
-          <nav
-            aria-label="Navegação principal"
-            className="hidden lg:flex items-center gap-7 text-sm font-medium text-[#5A6474] dark:text-[#9AA4B2]"
-          >
-            <button
-              type="button"
-              onClick={() => setVoicesOpen(true)}
-              disabled={!currentChapter}
-              className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+          {/* Zone 2 & 3: Quiet navigation & actions */}
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <nav
+              aria-label="Navegação principal"
+              className="hidden lg:flex items-center gap-5 text-sm font-medium text-[#5A6474] dark:text-[#9AA4B2]"
             >
-              Vozes
-            </button>
-            {isCuratorMode && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setVoicesOpen(true)}
-                  disabled={!currentChapter}
-                  className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                >
-                  Banco de áudio ({cacheInventory.count})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAddBookOpen(true)}
-                  className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Adicionar coleção
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => setDarkMode((prev) => !prev)}
-              className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              {darkMode ? 'Tema claro' : 'Tema noturno'}
-            </button>
-            {isAdmin && (
               <button
                 type="button"
-                onClick={handleToggleCuratorMode}
-                aria-pressed={isCuratorMode}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  isCuratorMode
-                    ? 'bg-[#1E3A5F]/12 dark:bg-[#7FA6D6]/20 text-[#1E3A5F] dark:text-[#7FA6D6]'
-                    : 'text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF]'
-                }`}
+                onClick={() => setVoicesOpen(true)}
+                disabled={!currentChapter}
+                className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
               >
-                {isCuratorMode ? 'Curador ativo' : 'Modo Curador'}
+                Vozes
               </button>
-            )}
-          </nav>
-
-          {/* Zone 3: Single primary action on desktop / quiet mobile icons */}
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => setChaptersOpen(true)}
-              aria-label="Abrir fábulas e contos"
-              className="lg:hidden min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#14171F] dark:text-[#EAECEF] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
-            >
-              <BookOpen className="w-[19px] h-[19px]" aria-hidden="true" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setDarkMode((prev) => !prev)}
-              aria-label={darkMode ? 'Ativar tema claro' : 'Ativar tema noturno'}
-              className="lg:hidden min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#14171F] dark:text-[#EAECEF] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
-            >
-              {darkMode ? (
-                <Sun className="w-[19px] h-[19px]" aria-hidden="true" />
-              ) : (
-                <Moon className="w-[19px] h-[19px]" aria-hidden="true" />
+              {isCuratorMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setVoicesOpen(true)}
+                    disabled={!currentChapter}
+                    className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    Banco de áudio ({cacheInventory.count})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddBookOpen(true)}
+                    className="hover:text-[#14171F] dark:hover:text-[#EAECEF] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Adicionar coleção
+                  </button>
+                </>
               )}
-            </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleToggleCuratorMode}
+                  aria-pressed={isCuratorMode}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    isCuratorMode
+                      ? 'bg-[#1E3A5F]/12 dark:bg-[#7FA6D6]/20 text-[#1E3A5F] dark:text-[#7FA6D6]'
+                      : 'text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF]'
+                  }`}
+                >
+                  {isCuratorMode ? 'Curador ativo' : 'Curador'}
+                </button>
+              )}
+            </nav>
 
-            <button
-              type="button"
-              onClick={() => void handleSynthesizeOrPlay(false)}
-              disabled={isSynthesizing || isLoadingChapter || !currentChapter}
-              className="hidden lg:inline-flex min-h-[38px] px-4 py-2 rounded-xl bg-[#1E3A5F] dark:bg-[#7FA6D6] text-white dark:text-[#101216] text-xs font-semibold hover:bg-[#162C49] dark:hover:bg-[#93B6E0] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-70"
-            >
-              {isSynthesizing
-                ? 'Preparando…'
-                : isPlaying
-                  ? 'Pausar leitura'
-                  : 'Ouvir história'}
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setChaptersOpen(true)}
+                aria-label="Abrir fábulas e contos"
+                className="lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-[#14171F] dark:text-[#EAECEF] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
+              >
+                <BookOpen className="w-[18px] h-[18px]" aria-hidden="true" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDarkMode((prev) => !prev)}
+                aria-label={darkMode ? 'Ativar tema claro' : 'Ativar tema noturno'}
+                title={darkMode ? 'Tema claro' : 'Tema noturno'}
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-[#5A6474] dark:text-[#9AA4B2] hover:text-[#14171F] dark:hover:text-[#EAECEF] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
+              >
+                {darkMode ? (
+                  <Sun className="w-[18px] h-[18px]" aria-hidden="true" />
+                ) : (
+                  <Moon className="w-[18px] h-[18px]" aria-hidden="true" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -1791,12 +1775,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Responsive layout: full 2-column editorial storybook studio on desktop, focused single-column mobile reader */}
-      <main id="leitura" className="max-w-6xl mx-auto lg:grid lg:grid-cols-[310px_minmax(0,1fr)] lg:gap-10 lg:px-6">
+      {/* Responsive layout: compact sidebar + spacious editorial reading column */}
+      <main id="leitura" className="max-w-6xl mx-auto lg:grid lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-10 lg:px-6">
         {/* Desktop left fables & fairy tales sidebar */}
         <aside
           aria-label="Índice de coleções e histórias"
-          className="hidden lg:block py-10 pr-6 border-r border-neutral-200/80 dark:border-neutral-800"
+          className="hidden lg:block py-7 pr-5 border-r border-neutral-200/80 dark:border-neutral-800"
         >
           <ChaptersListContent
             books={books}

@@ -70,9 +70,9 @@ export function AudioDock({
       className="fixed bottom-0 left-0 right-0 z-40 bg-[#FFFFFF]/95 dark:bg-[#14171D]/95 backdrop-blur-md border-t border-neutral-200/90 dark:border-neutral-800 pb-safe"
       data-testid="audio-dock"
     >
-      <div className="max-w-6xl mx-auto lg:grid lg:grid-cols-[310px_minmax(0,1fr)] lg:gap-10 lg:px-6">
+      <div className="max-w-6xl mx-auto lg:grid lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-10 lg:px-6">
         <div className="hidden lg:block" aria-hidden="true" />
-        <div className="w-full max-w-[66ch] mx-auto px-4 sm:px-8 pt-2 pb-2">
+        <div className="w-full max-w-[68ch] mx-auto px-4 sm:px-8 pt-2 pb-2">
           {isLocalSpeechActive ? (
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2 px-1 text-[11px] text-[#5A6474] dark:text-[#9AA4B2]">

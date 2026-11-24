@@ -11,8 +11,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit && oxlint src server server.ts vite.config.ts && eslint firestore.rules",
-    "test": "tsx --test src/lib/*.test.ts server/*.test.ts firestore.rules.test.ts"
+    "lint": "tsc --noEmit && oxlint src server scripts server.ts vite.config.ts && eslint firestore.rules",
+    "test": "tsx --test src/lib/*.test.ts server/*.test.ts firestore.rules.test.ts",
+    "illustrations:prerender": "tsx scripts/prerender-illustrations.ts"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",

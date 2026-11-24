@@ -119,13 +119,13 @@ export function ChaptersListContent({
         </div>
       )}
 
-      {/* Selected collection editorial summary + progress */}
-      <div className="flex items-start gap-3.5">
+      {/* Selected collection editorial summary */}
+      <div className="flex items-start gap-3">
         <BookCover
           src={displayedBook.coverUrl}
           title={displayedBook.title}
           author={displayedBook.author}
-          className="w-14 shrink-0"
+          className="w-11 shrink-0"
         />
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="flex items-start justify-between gap-2">
@@ -147,22 +147,26 @@ export function ChaptersListContent({
           <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
             {displayedBook.author} · {displayedBook.year}
           </p>
-          <p className="text-[11px] text-[#5A6474] dark:text-[#9AA4B2] mt-1 font-mono-tabular">
-            {cachedCountInBook} de {displayedBook.chapters.length} com áudio pronto
-          </p>
-          {currentIdxInBook >= 0 && displayedBook.chapters.length > 1 && (
-            <div className="mt-1.5 h-[2px] w-full bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-[#1E3A5F] dark:bg-[#7FA6D6]"
-                style={{ width: `${progressPercent}%` }}
-              />
-            </div>
+          {isCuratorMode && (
+            <>
+              <p className="text-[11px] text-[#5A6474] dark:text-[#9AA4B2] mt-1 font-mono-tabular">
+                {cachedCountInBook} de {displayedBook.chapters.length} com áudio pronto
+              </p>
+              {currentIdxInBook >= 0 && displayedBook.chapters.length > 1 && (
+                <div className="mt-1.5 h-[2px] w-full bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#1E3A5F] dark:bg-[#7FA6D6]"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
 
       {/* Story search & pre-rendered filter */}
-      {displayedBook.chapters.length >= 4 && (
+      {(isCuratorMode || displayedBook.chapters.length >= 10) && (
         <div className="space-y-2">
           <div className="relative">
             <Search
@@ -227,7 +231,7 @@ export function ChaptersListContent({
         className={
           isSheet
             ? 'flex-1 min-h-0'
-            : 'lg:max-h-[calc(100vh-27rem)] lg:overflow-y-auto lg:pr-1'
+            : 'lg:max-h-[calc(100vh-22rem)] lg:overflow-y-auto lg:pr-1'
         }
       >
         {filteredChapters.length === 0 ? (
@@ -251,40 +255,47 @@ export function ChaptersListContent({
                     type="button"
                     onClick={() => onSelectChapter(displayedBook.id, chapter.id)}
                     aria-current={isSelected ? 'page' : undefined}
-                    className={`w-full min-h-[54px] py-2.5 px-2.5 text-left flex items-center justify-between gap-3 transition-colors rounded-lg cursor-pointer ${
+                    className={`w-full ${
+                      isCuratorMode ? 'min-h-[54px] py-2.5' : 'min-h-[42px] py-2'
+                    } px-2.5 text-left flex items-center justify-between gap-2.5 transition-colors rounded-lg cursor-pointer ${
                       isSelected
                         ? 'bg-[#1E3A5F]/[0.08] dark:bg-[#7FA6D6]/[0.14]'
                         : 'hover:bg-black/[0.03] dark:hover:bg-white/[0.03]'
                     }`}
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-[#14171F] dark:text-[#EAECEF] truncate">
                         <span className="font-mono-tabular text-xs text-[#5A6474] dark:text-[#9AA4B2] mr-1.5">
                           {chapter.roman}.
                         </span>
                         {chapter.title}
                       </p>
-                      <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
-                        {isCuratorMode ? (
-                          <>
-                            <span>{chapter.dramatizedByAi ? 'Pré-ajustado IA' : 'Texto'}</span>
-                            <span aria-hidden="true"> · </span>
-                          </>
-                        ) : null}
-                        <span>
-                          {chapter.characterCount}{' '}
-                          {chapter.characterCount === 1 ? 'voz' : 'vozes'}
-                        </span>
-                        <span aria-hidden="true"> · </span>
-                        {isCached ? (
-                          <span className="text-[#1E3A5F] dark:text-[#7FA6D6] font-medium">
-                            Áudio pronto
+                      {isCuratorMode && (
+                        <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
+                          <span>{chapter.dramatizedByAi ? 'Pré-ajustado IA' : 'Texto'}</span>
+                          <span aria-hidden="true"> · </span>
+                          <span>
+                            {chapter.characterCount}{' '}
+                            {chapter.characterCount === 1 ? 'voz' : 'vozes'}
                           </span>
-                        ) : (
-                          <span>~{chapter.estimatedMinutes} min</span>
-                        )}
-                      </p>
+                          <span aria-hidden="true"> · </span>
+                          {isCached ? (
+                            <span className="text-[#1E3A5F] dark:text-[#7FA6D6] font-medium">
+                              Áudio pronto
+                            </span>
+                          ) : (
+                            <span>~{chapter.estimatedMinutes} min</span>
+                          )}
+                        </p>
+                      )}
                     </div>
+                    {!isCuratorMode && isCached && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-[#1E3A5F] dark:bg-[#7FA6D6] shrink-0"
+                        title="Áudio pronto"
+                        aria-label="Áudio pronto"
+                      />
+                    )}
                   </button>
                 </li>
               );

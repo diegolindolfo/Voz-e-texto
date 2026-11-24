@@ -53,3 +53,11 @@ npm run lint
 npm test
 npm run build
 ```
+
+### Pré-renderização de Ilustrações (Nano Banana 2.1)
+
+Para gerar localmente as 18 ilustrações em aquarela (`16:9` `.jpg`) das fábulas e contos em `public/illustrations/` usando sua `GEMINI_API_KEY`:
+
+```bash
+npm run illustrations:prerender
+```

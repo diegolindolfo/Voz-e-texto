@@ -38,6 +38,7 @@ export interface ChapterSummary {
   dramatizedByAi?: boolean;
   moral?: string;
   aiNotes?: string;
+  illustrationUrl?: string;
   isCustom?: boolean;
 }
 
