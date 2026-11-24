@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build:api": "esbuild server/vercelEntry.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/index.js",
+    "build:api": "esbuild server/vercelEntry.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist-api/index.mjs",
     "build": "npm run build:api && vite build",
     "start": "node server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist dist-api server.js",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && oxlint src server scripts server.ts vite.config.ts && eslint firestore.rules",
     "test": "tsx --test src/lib/*.test.ts server/*.test.ts firestore.rules.test.ts",

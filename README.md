@@ -23,7 +23,7 @@ Biblioteca e intérprete dramatizado de **fábulas e contos infantis de domínio
 
 ## Como publicar na Vercel
 
-O projeto utiliza `vercel.json` com função serverless compilada em `api/index.js` a partir de `server/vercelEntry.ts`, servindo os MP3 estáticos de `public/audio-cache/`.
+O projeto utiliza `vercel.json` com função serverless (`api/index.js` apontando para o bundle `dist-api/index.mjs` compilado a partir de `server/vercelEntry.ts`), servindo os MP3 estáticos de `public/audio-cache/`.
 
 1. Configure as variáveis de ambiente na Vercel:
    - `GEMINI_API_KEY`: chave da API Gemini para síntese de voz e roteirização.
