@@ -83,3 +83,57 @@ test('sanitizePrerenderedAudioPayload truncates strings and enforces blueprint b
   assert.equal(sanitized.durationSec, 87.625);
   assert.equal(sanitized.segments.length, 1);
 });
+
+test('splitWavIntoFirestoreChunks e mergeFirestoreChunksToWav preservam payload MP3 compactado', () => {
+  const sampleMp3 = new Uint8Array(650 * 1024);
+  sampleMp3[0] = 0xff;
+  sampleMp3[1] = 0xfb;
+  sampleMp3[2] = 0x90;
+  sampleMp3[3] = 0x64;
+  for (let i = 4; i < sampleMp3.length; i += 1) {
+    sampleMp3[i] = (i * 17) & 0xff;
+  }
+
+  const chunks = splitWavIntoFirestoreChunks(sampleMp3);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0]?.index, 0);
+  assert.equal(chunks[1]?.index, 1);
+
+  const restored = mergeFirestoreChunksToWav(chunks);
+  assert.equal(restored.byteLength, sampleMp3.byteLength);
+  assert.deepEqual(restored, sampleMp3);
+
+  const sanitized = sanitizePrerenderedAudioPayload({
+    cacheKey: 'mp3-chunk-test',
+    chapterId: 'dom-casmurro-cap-1',
+    bookId: 'dom-casmurro',
+    bookTitle: 'Dom Casmurro',
+    chapterTitle: 'Capítulo I',
+    mode: 'dramatized',
+    voiceMap: { Narrador: 'Charon' },
+    durationSec: 65.4,
+    fileSizeBytes: sampleMp3.byteLength,
+    mimeType: 'audio/mpeg',
+    storageType: 'chunks',
+    chunkCount: chunks.length,
+    segments: [
+      {
+        turnId: 'dc-t1',
+        speaker: 'Narrador',
+        voiceName: 'Charon',
+        startSec: 0,
+        endSec: 65.4,
+      },
+    ],
+    status: 'ready',
+    isPublic: true,
+    createdByUid: 'uid-admin',
+    createdByName: 'Curador',
+  });
+
+  assert.equal(sanitized.mimeType, 'audio/mpeg');
+  assert.equal(sanitized.storageType, 'chunks');
+  assert.equal(sanitized.chunkCount, 2);
+  assert.equal('storagePath' in sanitized, false);
+  assert.equal('downloadUrl' in sanitized, false);
+});

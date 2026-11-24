@@ -303,7 +303,7 @@ export function VoicesCacheSheet({
                 <div className="flex items-center justify-between gap-2 mb-2.5">
                   <h3 className="text-xs font-semibold text-[#5A6474] dark:text-[#9AA4B2] inline-flex items-center gap-1.5 min-w-0">
                     <Database className="w-3.5 h-3.5 shrink-0 text-[#1E3A5F] dark:text-[#7FA6D6]" aria-hidden="true" />
-                    <span className="truncate">Firebase Storage + Firestore</span>
+                    <span className="truncate">Banco Firestore (Plano Free)</span>
                   </h3>
                   <span className="font-mono-tabular text-[11px] text-[#5A6474] dark:text-[#9AA4B2] whitespace-nowrap shrink-0">
                     {firestoreCount} na nuvem · {cacheInventory.count} total
@@ -508,7 +508,7 @@ export function VoicesCacheSheet({
                       </p>
                       <p className="text-xs text-[#5A6474] dark:text-[#9AA4B2] mt-0.5">
                         {firestoreKeys.has(currentCacheKey)
-                          ? 'Armazenada na nuvem (Firebase Storage) para reprodução em qualquer dispositivo.'
+                          ? 'Armazenada em blocos no Firestore para reprodução em qualquer dispositivo.'
                           : 'Disponível em cache estático ou local.'}
                       </p>
                     </div>
@@ -578,7 +578,7 @@ export function VoicesCacheSheet({
                                 onClick={() => onSaveItemToFirestore(item)}
                                 disabled={isSyncingDb}
                                 aria-label={`Salvar ${item.chapterTitle} na nuvem`}
-                                title="Salvar no Firebase Storage"
+                                title="Salvar no banco Firestore"
                                 className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#1E3A5F] dark:text-[#7FA6D6] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer disabled:opacity-45"
                               >
                                 <CloudUpload className="w-4 h-4" aria-hidden="true" />

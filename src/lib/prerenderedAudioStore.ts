@@ -10,15 +10,11 @@ import {
   serverTimestamp,
   setDoc,
   Timestamp,
+  updateDoc,
   where,
   type Unsubscribe,
 } from 'firebase/firestore';
-import {
-  deleteObject,
-  getDownloadURL,
-  ref,
-  uploadBytesResumable,
-} from 'firebase/storage';
+import { deleteObject, ref } from 'firebase/storage';
 import type {
   AudioMimeType,
   AudioSegmentTiming,
@@ -29,6 +25,7 @@ import type {
 import {
   mergeFirestoreChunksToWav,
   sanitizePrerenderedAudioPayload,
+  splitWavIntoFirestoreChunks,
 } from './audioChunks';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
@@ -207,15 +204,18 @@ export async function loadWavBlobFromFirestore(cacheKey: string): Promise<Blob> 
     });
 
     const wavBytes = mergeFirestoreChunksToWav(rawChunks);
+    const detectedMime = detectMimeType(wavBytes);
     const arrayBuffer = wavBytes.buffer.slice(
       wavBytes.byteOffset,
       wavBytes.byteOffset + wavBytes.byteLength,
     ) as ArrayBuffer;
-    return new Blob([arrayBuffer], { type: 'audio/wav' });
+    return new Blob([arrayBuffer], { type: detectedMime });
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, chunksPath);
   }
 }
+
+export const loadAudioBlobFromFirestore = loadWavBlobFromFirestore;
 
 /**
  * Deletes a pre-rendered audio catalog document and its Firebase Storage object (or legacy chunks).
@@ -269,7 +269,7 @@ export async function deletePrerenderedAudioFromFirestore(cacheKey: string): Pro
 }
 
 /**
- * Uploads a pre-rendered MP3/WAV audio binary to Firebase Storage and saves its catalog manifest in Firestore.
+ * Splits a pre-rendered MP3/WAV audio binary into Firestore-safe chunks and saves it to Cloud Firestore (Spark Free compatible).
  */
 export async function savePrerenderedAudioToFirestore(params: {
   meta: CachedAudioMetadata;
@@ -284,10 +284,10 @@ export async function savePrerenderedAudioToFirestore(params: {
   }
 
   const mimeType = detectMimeType(audioBytes, meta.mimeType);
-  const ext = mimeType === 'audio/wav' ? 'wav' : 'mp3';
   const displayName = (user.displayName || 'Curador Voz & Folha').trim().slice(0, 120);
+  const chunks = splitWavIntoFirestoreChunks(audioBytes);
 
-  const preSanitized = sanitizePrerenderedAudioPayload({
+  const sanitized = sanitizePrerenderedAudioPayload({
     cacheKey: meta.cacheKey,
     chapterId: meta.chapterId,
     bookId,
@@ -298,63 +298,24 @@ export async function savePrerenderedAudioToFirestore(params: {
     durationSec: meta.durationSec,
     fileSizeBytes: audioBytes.byteLength,
     mimeType,
-    storageType: 'storage',
-    chunkCount: 0,
+    storageType: 'chunks',
+    chunkCount: chunks.length,
     segments: meta.segments,
-    status: 'ready',
+    status: 'uploading',
     isPublic: true,
     createdByUid: user.uid,
     createdByName: displayName,
   });
 
-  const storagePath = `prerendered-audios/${preSanitized.cacheKey}.${ext}`;
-  const storageRef = ref(storage, storagePath);
-
-  onProgress?.(0, 100);
-  await new Promise<void>((resolve, reject) => {
-    const task = uploadBytesResumable(storageRef, audioBytes, {
-      contentType: mimeType,
-      cacheControl: 'public, max-age=31536000',
-      customMetadata: {
-        createdByUid: user.uid,
-        cacheKey: preSanitized.cacheKey,
-      },
-    });
-
-    task.on(
-      'state_changed',
-      (snap) => {
-        if (snap.totalBytes > 0) {
-          const pct = Math.min(99, Math.round((snap.bytesTransferred / snap.totalBytes) * 100));
-          onProgress?.(pct, 100);
-        }
-      },
-      (err) => reject(err),
-      () => {
-        onProgress?.(100, 100);
-        resolve();
-      },
-    );
-  });
-
-  const downloadUrl = await getDownloadURL(storageRef);
-
-  const sanitized = sanitizePrerenderedAudioPayload({
-    ...preSanitized,
-    storagePath,
-    downloadUrl,
-  });
-
   const parentRef = doc(db, COLLECTION_NAME, sanitized.cacheKey);
   const parentPath = `${COLLECTION_NAME}/${sanitized.cacheKey}`;
+
+  onProgress?.(0, 100);
 
   try {
     const existingSnap = await getDoc(parentRef);
     if (existingSnap.exists()) {
-      const oldData = existingSnap.data() as Record<string, unknown>;
-      if (oldData.storageType === 'chunks') {
-        await deletePrerenderedAudioFromFirestore(sanitized.cacheKey);
-      }
+      await deletePrerenderedAudioFromFirestore(sanitized.cacheKey);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, parentPath);
@@ -370,6 +331,44 @@ export async function savePrerenderedAudioToFirestore(params: {
     handleFirestoreError(error, OperationType.CREATE, parentPath);
   }
 
+  let completed = 0;
+  const CONCURRENCY = 3;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (chunk) => {
+        const chunkId = `chunk-${String(chunk.index).padStart(3, '0')}`;
+        const chunkRef = doc(db, COLLECTION_NAME, sanitized.cacheKey, 'chunks', chunkId);
+        const chunkPath = `${parentPath}/chunks/${chunkId}`;
+        try {
+          await setDoc(chunkRef, {
+            parentCacheKey: sanitized.cacheKey,
+            index: chunk.index,
+            dataBase64: chunk.dataBase64,
+            byteLength: chunk.byteLength,
+            isPublic: sanitized.isPublic,
+            createdByUid: user.uid,
+            createdAt: serverTimestamp(),
+          });
+          completed += 1;
+          onProgress?.(Math.min(99, Math.round((completed / chunks.length) * 100)), 100);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, chunkPath);
+        }
+      }),
+    );
+  }
+
+  try {
+    await updateDoc(parentRef, {
+      status: 'ready',
+      updatedAt: serverTimestamp(),
+    });
+    onProgress?.(100, 100);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, parentPath);
+  }
+
   return {
     ...meta,
     cacheKey: sanitized.cacheKey,
@@ -378,11 +377,9 @@ export async function savePrerenderedAudioToFirestore(params: {
     durationSec: sanitized.durationSec,
     mimeType,
     segments: sanitized.segments,
-    audioUrl: downloadUrl,
-    storageSource: 'firebase-storage',
-    storagePath,
-    downloadUrl,
-    chunkCount: 0,
+    audioUrl: `firestore://${sanitized.cacheKey}`,
+    storageSource: 'firestore',
+    chunkCount: chunks.length,
     createdByUid: user.uid,
     createdByName: displayName,
     createdAt: new Date().toISOString(),

@@ -9,13 +9,13 @@ const CACHE_NAME = 'voz-e-folha-audio-v2';
 function toBrowserCacheKey(audioUrl: string): string {
   if (isFirestoreAudioUrl(audioUrl)) {
     const key = extractCacheKeyFromFirestoreUrl(audioUrl);
-    return `/firestore-audio/${key}.wav`;
+    return `/firestore-audio/${key}`;
   }
   return audioUrl;
 }
 
 function inferContentType(audioUrl: string, mimeType?: string): string {
-  if (mimeType === 'audio/wav' || /\.wav(\?|$)/i.test(audioUrl) || isFirestoreAudioUrl(audioUrl)) {
+  if (mimeType === 'audio/wav' || /\.wav(\?|$)/i.test(audioUrl)) {
     return 'audio/wav';
   }
   return 'audio/mpeg';
@@ -57,7 +57,7 @@ export async function getPlayableAudioBlobUrl(
       await cache.put(
         cacheKeyUrl,
         new Response(blob.slice(0), {
-          headers: { 'Content-Type': inferContentType(audioUrl, mimeType) },
+          headers: { 'Content-Type': blob.type || inferContentType(audioUrl, mimeType) },
         }),
       );
       return { blobUrl: URL.createObjectURL(blob), fromBrowserCache: false };

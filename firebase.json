@@ -2,8 +2,5 @@
   "firestore": {
     "database": "ai-studio-remixvozfolha-1532a9b2-e0d0-4877-b18d-6cfed49cf348",
     "rules": "firestore.rules"
-  },
-  "storage": {
-    "rules": "storage.rules"
   }
 }

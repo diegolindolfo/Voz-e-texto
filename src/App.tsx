@@ -348,7 +348,7 @@ export default function App() {
     for (const dbItem of firestoreItems) {
       map.set(dbItem.cacheKey, {
         ...dbItem,
-        storageSource: dbItem.storageSource ?? 'firebase-storage',
+        storageSource: dbItem.storageSource ?? 'firestore',
         exists: true,
       });
     }
@@ -804,7 +804,7 @@ export default function App() {
                 setDbSyncLabel(`Enviando para a nuvem (${done}%)…`);
               },
             });
-            noticeMessage = 'Áudio MP3 gerado e salvo no Firebase Storage!';
+            noticeMessage = 'Áudio MP3 gerado e salvo no Firestore!';
           } catch (dbErr) {
             console.warn('Auto-save to cloud skipped:', dbErr);
           } finally {
@@ -1381,7 +1381,7 @@ export default function App() {
             setDbSyncLabel(`Enviando "${item.chapterTitle}" (${done}%)…`);
           },
         });
-        setStatusNotice(`"${item.chapterTitle}" salvo permanentemente no Firebase Storage!`);
+        setStatusNotice(`"${item.chapterTitle}" salvo permanentemente no Firestore!`);
       } catch (err) {
         setErrorMessage(formatFriendlyFirestoreError(err));
       } finally {
@@ -1421,7 +1421,7 @@ export default function App() {
         synced += 1;
       }
       setStatusNotice(
-        `${synced} ${synced === 1 ? 'áudio salvo' : 'áudios salvos'} no Firebase Storage com sucesso.`,
+        `${synced} ${synced === 1 ? 'áudio salvo' : 'áudios salvos'} no Firestore com sucesso.`,
       );
     } catch (err) {
       setErrorMessage(formatFriendlyFirestoreError(err));
