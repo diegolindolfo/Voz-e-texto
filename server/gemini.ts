@@ -21,6 +21,7 @@ import {
   batchTurnsForTts,
   computeBatchFingerprint,
   expandBatchTimingsToTurns,
+  stripLeadingSpeakerPrefix,
   type TtsTurnBatch,
 } from '../src/lib/scriptParser';
 import {
@@ -187,7 +188,9 @@ async function synthesizeWithLiteFallback(
     const soloSpeaker = batch.speakers[0];
     return synthesizeSingleVoiceLiteWav(
       ai,
-      batch.turns.map((item) => ({ text: item.turn.text })),
+      batch.turns.map((item) => ({
+        text: stripLeadingSpeakerPrefix(item.turn.text, item.speakerLabel),
+      })),
       soloSpeaker.voiceName,
       options,
     );
@@ -204,7 +207,7 @@ async function synthesizeWithLiteFallback(
     const item = batch.turns[idx];
     const wavBuffer = await synthesizeSingleVoiceLiteWav(
       ai,
-      [{ text: item.turn.text }],
+      [{ text: stripLeadingSpeakerPrefix(item.turn.text, item.speakerLabel) }],
       item.voiceName,
       options,
     );
@@ -235,16 +238,19 @@ async function synthesizeBatchWav(
     const response = await withRetry(
       () => {
         if (isDualSpeaker) {
+          const speakerSlotByLabel = new Map(
+            batch.speakers.map((sp, index) => [sp.label, `Speaker${index + 1}`]),
+          );
           return ai.models.generateContent({
             model: 'gemini-3.8-flash-tts',
             contents: [
               {
                 role: 'user',
                 parts: batch.turns.map((item) => ({
-                  text: `${item.speakerLabel}: ${item.turn.text}`,
+                  text: stripLeadingSpeakerPrefix(item.turn.text, item.speakerLabel),
                   speechMetadata: {
-                    speaker: item.speakerLabel,
-                    style: `${item.turn.style}. Contação de histórias e fábulas infantis em português do Brasil, expressiva e natural.`,
+                    speaker: speakerSlotByLabel.get(item.speakerLabel) ?? 'Speaker1',
+                    style: `${item.turn.style}. Contação de histórias e fábulas infantis em português do Brasil, expressiva e natural. Leia apenas o texto da fala sem anunciar nomes de personagens.`,
                   },
                 })),
               },
@@ -253,8 +259,8 @@ async function synthesizeBatchWav(
               responseModalities: ['AUDIO'],
               speechConfig: {
                 multiSpeakerVoiceConfig: {
-                  speakerVoiceConfigs: batch.speakers.map((sp) => ({
-                    speaker: sp.label,
+                  speakerVoiceConfigs: batch.speakers.map((sp, index) => ({
+                    speaker: `Speaker${index + 1}`,
                     voiceConfig: {
                       prebuiltVoiceConfig: { voiceName: sp.voiceName },
                     },
@@ -272,9 +278,9 @@ async function synthesizeBatchWav(
             {
               role: 'user',
               parts: batch.turns.map((item) => ({
-                text: item.turn.text,
+                text: stripLeadingSpeakerPrefix(item.turn.text, item.speakerLabel),
                 speechMetadata: {
-                  style: `${item.turn.style}. Contação de histórias e fábulas infantis em português do Brasil, expressiva e natural.`,
+                  style: `${item.turn.style}. Contação de histórias e fábulas infantis em português do Brasil, expressiva e natural. Leia apenas o texto da fala sem anunciar nomes de personagens.`,
                 },
               })),
             },
@@ -486,6 +492,7 @@ Regras obrigatórias:
    - Zephyr: voz leve, musical e encantada (cigarras, raposas astutas, princesas, cisnes)
 3. Escreva uma direção vocal expressiva em português (campo "style") descrevendo o tom, o ritmo e a emoção de cada fala para leitura infantil.
 4. Extraia ou formule a moral da fábula / ensinamento do conto em uma frase clara no campo "moral".
+5. Nunca inclua o nome do personagem nem "Narrador:" no início do campo "text" de cada turno; mantenha apenas a narração ou a fala direta pura.
 
 Título da fábula ou conto: ${params.title}
 
@@ -589,17 +596,20 @@ ${params.rawText}`;
 
   const turns: ScriptTurn[] = (parsed.turns ?? [])
     .filter((t) => t.text && t.text.trim().length > 0)
-    .map((t, idx) => ({
-      id: `custom-t-${Date.now()}-${idx}`,
-      speaker: t.speaker?.trim() || characters[0]?.name || 'Contador de Histórias',
-      role: t.role === 'character' ? 'character' : 'narrator',
-      style: t.style?.trim() || 'Contação expressiva e acolhedora',
-      text: t.text.trim(),
-      pauseAfterMs:
-        typeof t.pauseAfterMs === 'number' && t.pauseAfterMs >= 120 && t.pauseAfterMs <= 800
-          ? t.pauseAfterMs
-          : 300,
-    }));
+    .map((t, idx) => {
+      const speaker = t.speaker?.trim() || characters[0]?.name || 'Contador de Histórias';
+      return {
+        id: `custom-t-${Date.now()}-${idx}`,
+        speaker,
+        role: t.role === 'character' ? 'character' : 'narrator',
+        style: t.style?.trim() || 'Contação expressiva e acolhedora',
+        text: stripLeadingSpeakerPrefix(t.text, speaker),
+        pauseAfterMs:
+          typeof t.pauseAfterMs === 'number' && t.pauseAfterMs >= 120 && t.pauseAfterMs <= 800
+            ? t.pauseAfterMs
+            : 300,
+      };
+    });
 
   if (turns.length === 0) {
     throw new Error('Não foi possível extrair falas válidas do conto enviado.');

@@ -111,6 +111,32 @@ export function splitRawTextIntoParagraphs(rawText: string): string[] {
     .filter((p) => p.length > 0);
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Strips any accidental leading speaker label (e.g. "A Cigarra: ..." or "Narrador: ...")
+ * so TTS models read only the pure narrative/dialogue line without announcing character names.
+ */
+export function stripLeadingSpeakerPrefix(text: string, speakerName?: string): string {
+  let cleaned = text.trim();
+  if (!cleaned) return '';
+
+  const candidates = [speakerName?.trim(), 'Narrador', 'Contador de Histórias'].filter(
+    (item): item is string => Boolean(item && item.length > 0),
+  );
+
+  for (const label of candidates) {
+    const pattern = new RegExp(`^(?:[—–-]\\s*)?${escapeRegExp(label)}\\s*:\\s*`, 'i');
+    if (pattern.test(cleaned)) {
+      cleaned = cleaned.replace(pattern, '').trim();
+    }
+  }
+
+  return cleaned;
+}
+
 /**
  * Resolves the effective voice for a turn depending on whether the user chose
  * multi-voice dramatization or single-narrator reading mode.
@@ -151,12 +177,13 @@ export interface TtsTurnBatch {
  */
 export function computeBatchFingerprint(batch: TtsTurnBatch): string {
   const canonical = JSON.stringify({
+    v: 2,
     speakers: batch.speakers.map((s) => `${s.label}:${s.voiceName}`),
     turns: batch.turns.map((t) => ({
       s: t.speakerLabel,
       v: t.voiceName,
       st: t.turn.style.trim(),
-      tx: t.turn.text.trim(),
+      tx: stripLeadingSpeakerPrefix(t.turn.text, t.speakerLabel),
     })),
   });
   let h1 = 0xdeadbeef ^ canonical.length;

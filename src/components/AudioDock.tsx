@@ -25,7 +25,6 @@ interface AudioDockProps {
   duration: number;
   playbackRate: number;
   downloadUrl: string | null;
-  activeSpeakerLabel?: string;
   onDownloadAudio?: () => void;
   onGenerateOrPlay: () => void;
   onTogglePlayPause: () => void;
@@ -50,7 +49,6 @@ export function AudioDock({
   duration,
   playbackRate,
   downloadUrl,
-  activeSpeakerLabel,
   onDownloadAudio,
   onGenerateOrPlay,
   onTogglePlayPause,
@@ -187,11 +185,6 @@ export function AudioDock({
                   >
                     {playbackRate}×
                   </button>
-                  {activeSpeakerLabel && (
-                    <span className="hidden sm:inline text-xs text-[#5A6474] dark:text-[#9AA4B2] truncate max-w-[180px]">
-                      {activeSpeakerLabel}
-                    </span>
-                  )}
                 </div>
 
                 <div className="flex items-center gap-2">

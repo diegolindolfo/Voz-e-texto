@@ -127,12 +127,6 @@ export function ChapterReader({
   const estimatedMinutes = chapter?.estimatedMinutes ?? chapterSummary?.estimatedMinutes ?? 1;
   const characterCount = chapter?.characters.length ?? chapterSummary?.characterCount ?? 1;
   const moral = chapter?.moral ?? chapterSummary?.moral;
-  const aiNotes =
-    chapter?.aiNotes ??
-    chapterSummary?.aiNotes ??
-    (chapter?.dramatizedByAi
-      ? `Roteiro pré-ajustado por IA · ${characterCount} vozes naturais e direção expressiva`
-      : undefined);
 
   const canRefineWithAi = Boolean(
     isCuratorMode && chapter && !isLoadingChapter && !chapter.dramatizedByAi && onDramatizeChapter,
@@ -215,12 +209,6 @@ export function ChapterReader({
                   : 'Pronto para pré-renderizar MP3'}
               </span>
             </div>
-
-            {aiNotes && (
-              <p className="mt-2 text-xs text-[#5A6474] dark:text-[#9AA4B2]">
-                {aiNotes}
-              </p>
-            )}
 
             <div className="mt-5 flex flex-wrap items-center justify-between gap-2.5">
               <div
@@ -348,18 +336,7 @@ export function ChapterReader({
         <div className="space-y-3" data-testid="chapter-prose">
           {chapter.turns.map((turn, index) => {
             const isActive = index === activeTurnIndex;
-            const voiceName = resolveVoiceForTurn(turn, voiceMap, mode, primaryNarratorVoice);
             const canSeek = Boolean(segments[index]) || isLocalSpeechActive;
-            const speakerChanged = index === 0 || chapter.turns[index - 1].speaker !== turn.speaker;
-            const showCuratorMeta =
-              isCuratorMode &&
-              mode === 'dramatized' &&
-              (turn.role === 'character' || speakerChanged);
-            const showReaderCharacterLabel =
-              !isCuratorMode &&
-              mode === 'dramatized' &&
-              turn.role === 'character' &&
-              speakerChanged;
 
             return (
               <section
@@ -373,40 +350,11 @@ export function ChapterReader({
                     : 'border-transparent hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
                 }`}
               >
-                {showCuratorMeta && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1 text-xs text-[#5A6474] dark:text-[#9AA4B2]">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="font-semibold text-[#1E3A5F] dark:text-[#7FA6D6]">
-                        {turn.speaker}
-                      </span>
-                      {turn.style && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="italic truncate text-[#5A6474] dark:text-[#9AA4B2]">
-                            {turn.style}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    <span className="font-mono-tabular text-[11px] shrink-0">{voiceName}</span>
-                  </div>
-                )}
-
-                {showReaderCharacterLabel && (
-                  <p className="text-[11px] font-semibold tracking-wide uppercase text-[#1E3A5F]/85 dark:text-[#7FA6D6]/90 mb-0.5">
-                    {turn.speaker}
-                  </p>
-                )}
-
                 <button
                   type="button"
                   onClick={() => onSeekToTurn(index)}
                   disabled={!canSeek}
-                  aria-label={
-                    canSeek
-                      ? `Ir para trecho ${index + 1} (${turn.speaker})`
-                      : `Trecho ${index + 1} (${turn.speaker})`
-                  }
+                  aria-label={canSeek ? `Ir para trecho ${index + 1}` : `Trecho ${index + 1}`}
                   className={`w-full text-left font-serif-reading text-[19px] sm:text-[20px] leading-[1.8] text-[#14171F] dark:text-[#E5E8EE] ${
                     turn.role === 'character' ? 'italic' : ''
                   } ${canSeek ? 'cursor-pointer' : 'cursor-default'} focus-visible:outline-2 focus-visible:outline-[#1E3A5F] rounded-lg`}

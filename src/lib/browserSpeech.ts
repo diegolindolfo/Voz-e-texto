@@ -1,4 +1,5 @@
 import type { ReadingMode, ScriptTurn } from '../types';
+import { stripLeadingSpeakerPrefix } from './scriptParser';
 
 export interface BrowserSpeechCallbacks {
   onTurnChange: (turnIndex: number) => void;
@@ -72,7 +73,9 @@ export class BrowserSpeechReader {
     }
 
     const turn = this.turns[this.currentIndex];
-    const utterance = new SpeechSynthesisUtterance(turn.text);
+    const utterance = new SpeechSynthesisUtterance(
+      stripLeadingSpeakerPrefix(turn.text, turn.speaker),
+    );
     utterance.lang = 'pt-BR';
     utterance.rate = this.rate;
 

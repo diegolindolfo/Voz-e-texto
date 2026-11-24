@@ -9,6 +9,7 @@ import {
   formatDuration,
   resolveVoiceForTurn,
   splitRawTextIntoParagraphs,
+  stripLeadingSpeakerPrefix,
 } from './scriptParser';
 import type { AudioSegmentTiming, ScriptTurn } from '../types';
 
@@ -165,4 +166,22 @@ test('expandBatchTimingsToTurns snaps split boundaries to detected PCM silences 
   assert.equal(expanded[0].endSec, 6.2);
   assert.equal(expanded[1].startSec, 6.2);
   assert.equal(expanded[1].endSec, 12.0);
+});
+
+test('stripLeadingSpeakerPrefix removes spoken speaker labels while keeping prose colons intact', () => {
+  assert.equal(
+    stripLeadingSpeakerPrefix('A Cigarra: Amiga Formiga, venha ouvir!', 'A Cigarra'),
+    'Amiga Formiga, venha ouvir!',
+  );
+  assert.equal(
+    stripLeadingSpeakerPrefix('Contador de Histórias: Durante todo o verão.', 'Contador de Histórias'),
+    'Durante todo o verão.',
+  );
+  assert.equal(
+    stripLeadingSpeakerPrefix('Narrador: Era uma vez na floresta.', 'Contador de Histórias'),
+    'Era uma vez na floresta.',
+  );
+  const proseWithColon =
+    'Pois entre, aqueça-se junto ao fogo e aprenda: há tempo de cantar e tempo de guardar para o amanhã.';
+  assert.equal(stripLeadingSpeakerPrefix(proseWithColon, 'A Formiga'), proseWithColon);
 });

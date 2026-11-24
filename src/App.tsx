@@ -1591,13 +1591,6 @@ export default function App() {
   const hasPrevChapter = currentChapterIndex > 0;
   const hasNextChapter = currentChapterIndex < currentBook.chapters.length - 1;
 
-  const activeSpeakerLabel =
-    activeTurnIndex >= 0 && activeSegments[activeTurnIndex]
-      ? isCuratorMode
-        ? `${activeSegments[activeTurnIndex].speaker} · ${activeSegments[activeTurnIndex].voiceName}`
-        : activeSegments[activeTurnIndex].speaker
-      : undefined;
-
   const synthesisProgressLabel = useMemo(() => {
     const job = ttsStatus.activeJob;
     if (!isSynthesizing || !job || job.cacheKey !== currentCacheKey) return undefined;
@@ -1615,10 +1608,7 @@ export default function App() {
     if (!isLocalSpeechActive || !currentChapter) return undefined;
     const total = currentChapter.turns.length;
     const current = Math.max(1, localSpeechTurnIndex + 1);
-    const turn = currentChapter.turns[localSpeechTurnIndex];
-    return turn
-      ? `Trecho ${current}/${total} · ${turn.speaker}`
-      : `Trecho ${current}/${total} · Voz local`;
+    return `Trecho ${current} de ${total}`;
   }, [currentChapter, isLocalSpeechActive, localSpeechTurnIndex]);
 
   const effectiveIsPlaying = isLocalSpeechActive ? isLocalSpeechPlaying : isPlaying;
@@ -1852,7 +1842,6 @@ export default function App() {
         duration={duration}
         playbackRate={playbackRate}
         downloadUrl={loadedAudioMeta?.audioUrl ?? serverCachedMeta?.audioUrl ?? null}
-        activeSpeakerLabel={activeSpeakerLabel}
         onDownloadAudio={() => {
           const target = loadedAudioMeta ?? serverCachedMeta;
           if (target) void handleDownloadCacheItem(target);
